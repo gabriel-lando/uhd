@@ -44,6 +44,11 @@ uhd::usrp::multi_usrp::sptr make_rfnoc_device(
 using namespace uhd;
 using namespace uhd::usrp;
 
+namespace uhd { namespace usrp {
+// Implemented in bonded_b200_multi_usrp.cpp
+uhd::usrp::multi_usrp::sptr make_bonded_b200_multi_usrp(const uhd::device_addr_t& dev_addr);
+}} // namespace uhd::usrp
+
 const size_t multi_usrp::ALL_MBOARDS    = size_t(~0);
 const size_t multi_usrp::ALL_CHANS      = size_t(~0);
 const std::string multi_usrp::ALL_GAINS = "";
@@ -2758,6 +2763,10 @@ multi_usrp::sptr multi_usrp::make(const device_addr_t& dev_addr)
 {
     UHD_LOGGER_TRACE("MULTI_USRP")
         << "multi_usrp::make with args " << dev_addr.to_pp_string();
+
+    if (dev_addr.has_key("type") && dev_addr["type"] == "bonded_b200") {
+        return uhd::usrp::make_bonded_b200_multi_usrp(dev_addr);
+    }
 
     device::sptr dev = device::make(dev_addr, device::USRP);
 
