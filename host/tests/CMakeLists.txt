@@ -126,6 +126,36 @@ if(ENABLE_PYTHON_API)
     )
 endif(ENABLE_PYTHON_API)
 
+########################################################################
+# Bonded PPS-only unit tests (require volk)
+########################################################################
+find_package(PkgConfig REQUIRED)
+pkg_check_modules(VOLK_TEST volk)
+
+if(VOLK_TEST_FOUND)
+    # pps_drift_test: pure C++ math, no extra libs beyond uhd
+    add_executable(pps_drift_test pps_drift_test.cpp)
+    target_link_libraries(pps_drift_test
+        PUBLIC uhd_test uhd Boost::unit_test_framework)
+    UHD_ADD_TEST(pps_drift_test pps_drift_test)
+    UHD_INSTALL(TARGETS pps_drift_test
+        RUNTIME DESTINATION ${PKG_LIB_DIR}/tests COMPONENT tests)
+
+    # phase_corrector_test: requires volk
+    add_executable(phase_corrector_test phase_corrector_test.cpp)
+    target_include_directories(phase_corrector_test PRIVATE ${VOLK_TEST_INCLUDE_DIRS})
+    target_link_libraries(phase_corrector_test
+        PUBLIC uhd_test uhd Boost::unit_test_framework
+        PRIVATE ${VOLK_TEST_LIBRARIES})
+    UHD_ADD_TEST(phase_corrector_test phase_corrector_test)
+    UHD_INSTALL(TARGETS phase_corrector_test
+        RUNTIME DESTINATION ${PKG_LIB_DIR}/tests COMPONENT tests)
+
+    message(STATUS "Building bonded PPS unit tests (volk found)")
+else()
+    message(STATUS "Skipping bonded PPS unit tests (volk not found)")
+endif()
+
 ###############################################################################
 # Add a unit test that requires linkage to internal parts of UHD which are not
 # API

@@ -120,6 +120,39 @@ public:
      */
     static sptr make(const device_addr_t& dev_addr);
 
+    /*!
+     * Open multiple independent USRP devices for bonded USB operation.
+     *
+     * USB-connected USRPs (e.g. B210) cannot be aggregated by a single
+     * multi_usrp::make() call the way Ethernet devices can using addr0/addr1.
+     * This method opens each device independently (one multi_usrp per serial),
+     * then synchronizes all hardware clocks to a common PPS edge:
+     *
+     *  1. Waits for a PPS edge to arrive on device 0 (up to 3 seconds).
+     *  2. Immediately calls set_time_next_pps(0.0) on EVERY device so they all
+     *     latch the same absolute time on the following PPS edge.
+     *  3. Waits 1.1 s for that latch to fire.
+     *
+     * The caller is responsible for configuring RF parameters (frequency, rate,
+     * gain) on each returned device before creating streamers.
+     *
+     * \param serials     Serial numbers of the USRP devices to open.
+     *                    At least 2 are required.
+     * \param clock_source Clock source applied to each device (default: "internal").
+     *                    Use "internal" for PPS-only bonding (each device uses
+     *                    its own TCXO); use "external" when a shared 10 MHz
+     *                    reference is available.
+     * \param time_source  PPS/time source applied to each device (default: "external").
+     * \returns Vector of synchronized multi_usrp instances.  Entry [0] is the
+     *          timing reference; entries [1..N-1] are aligned to it.
+     * \throws uhd::runtime_error if fewer than 2 serials are provided, if any
+     *         device cannot be opened, or if PPS is not detected within 3 s.
+     */
+    static std::vector<sptr> make_bonded_usb(
+        const std::vector<std::string>& serials,
+        const std::string& clock_source = "internal",
+        const std::string& time_source  = "external");
+
     /*! Get the underlying device object
      *
      * Note that it is not recommended to use this method. The property tree can

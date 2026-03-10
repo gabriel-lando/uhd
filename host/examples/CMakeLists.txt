@@ -50,6 +50,35 @@ foreach(example_source ${example_sources})
 endforeach(example_source)
 
 ########################################################################
+# Bonded PPS-only multi-device examples (require fftw3f + volk)
+########################################################################
+find_package(PkgConfig REQUIRED)
+pkg_check_modules(FFTW3F_EX fftw3f)
+pkg_check_modules(VOLK_EX volk)
+
+if(FFTW3F_EX_FOUND AND VOLK_EX_FOUND)
+    set(bonded_example_sources
+        bonded_wideband_rx.cpp
+        bonded_spectrum_monitor.cpp
+        bonded_drift_monitor.cpp
+    )
+    foreach(example_source ${bonded_example_sources})
+        get_filename_component(example_name ${example_source} NAME_WE)
+        add_executable(${example_name} ${example_source})
+        target_include_directories(${example_name} PRIVATE
+            ${FFTW3F_EX_INCLUDE_DIRS} ${VOLK_EX_INCLUDE_DIRS})
+        target_link_libraries(${example_name}
+            PUBLIC uhd Boost::program_options
+            PRIVATE ${FFTW3F_EX_LIBRARIES} ${VOLK_EX_LIBRARIES})
+        UHD_INSTALL(TARGETS ${example_name}
+            RUNTIME DESTINATION ${PKG_LIB_DIR}/examples COMPONENT examples)
+    endforeach(example_source)
+    message(STATUS "Building bonded PPS examples (fftw3f + volk found)")
+else()
+    message(STATUS "Skipping bonded PPS examples (fftw3f or volk not found)")
+endif()
+
+########################################################################
 # ASCII Art DFT - requires curses, so this part is optional
 ########################################################################
 set(CURSES_NEED_NCURSES 1)

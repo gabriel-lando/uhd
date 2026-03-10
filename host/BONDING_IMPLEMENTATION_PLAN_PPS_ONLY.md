@@ -1,4 +1,5 @@
 # USRP Bonding Implementation Plan - PPS-Only Synchronization
+
 ## Multi-Device Bandwidth Aggregation Using Only Pulse-Per-Second Signal
 
 **Project Goal**: Develop a driver-level mechanism to bond multiple USRP B210 (or other USB-based) devices using ONLY external PPS synchronization, without requiring a shared 10 MHz reference clock.
@@ -8,6 +9,7 @@
 ---
 
 ## Table of Contents
+
 1. [Executive Summary](#executive-summary)
 2. [PPS-Only Synchronization Rationale](#pps-only-rationale)
 3. [Architecture Overview](#architecture-overview)
@@ -24,16 +26,20 @@
 ## 1. Executive Summary
 
 ### Objective
+
 Create a bonding mechanism that requires ONLY a shared PPS signal (no 10 MHz reference), allowing each USRP to use its internal TCXO while maintaining time synchronization for bandwidth aggregation applications.
 
 ### Key Constraint
+
 Each B210 runs its own 40 MHz TCXO (±2 ppm). All devices share a GPS-derived PPS signal connected to their PPS input SMA port. The PPS provides **time alignment only** — each device's sample clock still runs independently. This means:
+
 - Hardware timestamps are aligned to within ~100 ns at each PPS edge
 - Sample rates between devices differ by up to ±4 ppm (worst case)
 - USB 3.0 transport adds non-deterministic latency (1-5 ms), but UHD hardware timestamps in `rx_metadata_t.time_spec` provide sub-sample timing — **USB jitter does NOT affect sample alignment**
 - Phase drift accumulates continuously and must be tracked
 
 ### Key Differences from 10MHz+PPS Approach
+
 - **Simpler Hardware**: Only PPS distribution needed (no 10 MHz splitter)
 - **Lower Cost**: GPS module with PPS output ($20-50 vs. GPSDO $300-1000)
 - **Independent Clocks**: Each device runs on internal oscillator
@@ -41,6 +47,7 @@ Each B210 runs its own 40 MHz TCXO (±2 ppm). All devices share a GPS-derived PP
 - **Suitable For**: Applications tolerant to small frequency errors (~2-5 ppm), or able to use software drift compensation
 
 ### Key Features
+
 - **PPS-Only Synchronization**: Time alignment using GPS PPS signal
 - **Timestamp-Based Sample Alignment**: Use UHD hardware timestamps (`rx_metadata_t.time_spec`) for sub-sample alignment — immune to USB jitter
 - **Drift Tracking**: Software-based frequency offset estimation and phase correction
@@ -48,6 +55,7 @@ Each B210 runs its own 40 MHz TCXO (±2 ppm). All devices share a GPS-derived PP
 - **Simplified Setup**: GPS module + SMA cables only
 
 ### Target Use Cases
+
 - **Wide-spectrum monitoring** (adjacent bands stitched together for >56 MHz total)
 - **Non-coherent multi-band reception** (different frequency ranges per device — simplest case, no drift compensation needed between bands)
 - **Budget-conscious deployments** without access to precision references
@@ -61,6 +69,7 @@ Each B210 runs its own 40 MHz TCXO (±2 ppm). All devices share a GPS-derived PP
 ### 2.1 Why PPS-Only?
 
 **Advantages:**
+
 1. **Simplified Hardware Setup**
    - GPS module PPS output → SMA Y-splitter → B210 PPS inputs
    - No RF power splitter for 10 MHz required
@@ -79,6 +88,7 @@ Each B210 runs its own 40 MHz TCXO (±2 ppm). All devices share a GPS-derived PP
    - GPS availability everywhere (field, mobile, indoor with antenna)
 
 **Disadvantages:**
+
 1. **Frequency Drift Between Devices**
    - B210 TCXO accuracy: ±2 ppm (±2 kHz at 1 GHz)
    - Two devices can differ by up to 4 ppm (±2 each, opposite directions)
@@ -99,6 +109,7 @@ Each B210 runs its own 40 MHz TCXO (±2 ppm). All devices share a GPS-derived PP
 ### 2.2 Technical Feasibility
 
 The B210's internal TCXO (40 MHz) has typical specifications:
+
 - **Initial Accuracy**: ±2 ppm at 25°C
 - **Temperature Stability**: ±2 ppm over 0-70°C
 - **Aging**: ±1 ppm per year
@@ -106,11 +117,11 @@ The B210's internal TCXO (40 MHz) has typical specifications:
 
 For bandwidth aggregation, the key insight:
 
-| Time Scale | TCXO Behavior | Implication |
-|------------|---------------|-------------|
-| < 1 second | Very stable (Allan dev ~1e-9) | Phase correction from last calibration is accurate |
-| 1-30 seconds | Drifts slowly (~0.01 ppm) | Periodic recalibration sufficient |
-| Minutes-hours | Temperature-driven drift (~0.1 ppm/°C) | Must track and correct |
+| Time Scale    | TCXO Behavior                          | Implication                                        |
+| ------------- | -------------------------------------- | -------------------------------------------------- |
+| < 1 second    | Very stable (Allan dev ~1e-9)          | Phase correction from last calibration is accurate |
+| 1-30 seconds  | Drifts slowly (~0.01 ppm)              | Periodic recalibration sufficient                  |
+| Minutes-hours | Temperature-driven drift (~0.1 ppm/°C) | Must track and correct                             |
 
 **Bottom Line**: PPS-only is viable because TCXO short-term stability is excellent. The challenge is tracking the slowly-changing offset between devices, not fighting random jitter.
 
@@ -163,16 +174,16 @@ For bandwidth aggregation, the key insight:
 
 ### 3.2 Key Architectural Differences
 
-| Component | 10MHz+PPS Approach | PPS-Only Approach |
-|-----------|-------------------|-------------------|
-| **Clock Source** | External 10 MHz reference | Internal TCXO (independent per device) |
-| **Time Sync** | PPS + locked oscillators | PPS only (time aligned, freq independent) |
-| **Sample Rate** | Identical (same master clock) | Differs by up to ±4 ppm between devices |
-| **Frequency Coherence** | Hardware-locked (excellent) | Software-tracked (good enough for stitching) |
-| **Drift Compensation** | Not needed | Phase correction required, resampling optional |
-| **Hardware Complexity** | High (2 reference signals) | Low (1 signal: PPS) |
-| **Setup Cost** | $500-1500 | $50-200 |
-| **Best For** | Coherent MIMO, adjacent-band stitching | Wideband monitoring, non-coherent multi-band |
+| Component               | 10MHz+PPS Approach                     | PPS-Only Approach                              |
+| ----------------------- | -------------------------------------- | ---------------------------------------------- |
+| **Clock Source**        | External 10 MHz reference              | Internal TCXO (independent per device)         |
+| **Time Sync**           | PPS + locked oscillators               | PPS only (time aligned, freq independent)      |
+| **Sample Rate**         | Identical (same master clock)          | Differs by up to ±4 ppm between devices        |
+| **Frequency Coherence** | Hardware-locked (excellent)            | Software-tracked (good enough for stitching)   |
+| **Drift Compensation**  | Not needed                             | Phase correction required, resampling optional |
+| **Hardware Complexity** | High (2 reference signals)             | Low (1 signal: PPS)                            |
+| **Setup Cost**          | $500-1500                              | $50-200                                        |
+| **Best For**            | Coherent MIMO, adjacent-band stitching | Wideband monitoring, non-coherent multi-band   |
 
 ### 3.3 Software Components
 
@@ -188,16 +199,16 @@ New components for PPS-only operation:
 
 Critical: UHD's existing infrastructure handles most of the hard problems:
 
-| UHD Feature | How We Use It |
-|-------------|---------------|
-| `set_time_source("external")` | Configures B210 to timestamp PPS edges from our GPS |
-| `set_clock_source("internal")` | Keeps each device on its own TCXO |
-| `set_time_unknown_pps(time_spec_t(0.0))` | Synchronizes all device clocks at the next PPS edge — handles edge detection automatically |
-| `get_time_synchronized()` | Verifies all boards are within ~10 ms (coarse check) |
-| `rx_metadata_t.time_spec` | **Hardware timestamp of first sample** — this is the key to alignment. Each B210's FPGA stamps every packet with its local time. Since PPS aligned the time bases, these timestamps are directly comparable across devices |
-| `stream_cmd_t` with `stream_now=false` | Start streaming at a specific future time on all devices simultaneously |
-| `time_spec_t::to_ticks(sample_rate)` | Convert timestamps to sample indices for precise alignment |
-| Multi-device `multi_usrp::make("addr0=...,addr1=...")` | Already supports multiple devices as a single `multi_usrp` with multiple mboards |
+| UHD Feature                                            | How We Use It                                                                                                                                                                                                              |
+| ------------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `set_time_source("external")`                          | Configures B210 to timestamp PPS edges from our GPS                                                                                                                                                                        |
+| `set_clock_source("internal")`                         | Keeps each device on its own TCXO                                                                                                                                                                                          |
+| `set_time_unknown_pps(time_spec_t(0.0))`               | Synchronizes all device clocks at the next PPS edge — handles edge detection automatically                                                                                                                                 |
+| `get_time_synchronized()`                              | Verifies all boards are within ~10 ms (coarse check)                                                                                                                                                                       |
+| `rx_metadata_t.time_spec`                              | **Hardware timestamp of first sample** — this is the key to alignment. Each B210's FPGA stamps every packet with its local time. Since PPS aligned the time bases, these timestamps are directly comparable across devices |
+| `stream_cmd_t` with `stream_now=false`                 | Start streaming at a specific future time on all devices simultaneously                                                                                                                                                    |
+| `time_spec_t::to_ticks(sample_rate)`                   | Convert timestamps to sample indices for precise alignment                                                                                                                                                                 |
+| Multi-device `multi_usrp::make("addr0=...,addr1=...")` | Already supports multiple devices as a single `multi_usrp` with multiple mboards                                                                                                                                           |
 
 ---
 
@@ -285,14 +296,14 @@ int64_t offset = tick1 - tick0;  // Sample offset between devices
 
 ### 4.4 What We Must Build (Not in UHD)
 
-| Component | Why It's Needed |
-|-----------|----------------|
-| **Bonding layer** | Wraps two `rx_streamer` instances into a single virtual wideband stream |
-| **Drift estimator** | Measures ppm offset between device TCXOs |
-| **Phase corrector** | Applies per-sample rotation to compensate drift |
-| **FFT stitcher** | Combines adjacent frequency slices into single output |
-| **Calibration mode** | Tunes both devices to same freq temporarily for drift measurement |
-| **Guard band manager** | Manages overlap/gap between frequency slices |
+| Component              | Why It's Needed                                                         |
+| ---------------------- | ----------------------------------------------------------------------- |
+| **Bonding layer**      | Wraps two `rx_streamer` instances into a single virtual wideband stream |
+| **Drift estimator**    | Measures ppm offset between device TCXOs                                |
+| **Phase corrector**    | Applies per-sample rotation to compensate drift                         |
+| **FFT stitcher**       | Combines adjacent frequency slices into single output                   |
+| **Calibration mode**   | Tunes both devices to same freq temporarily for drift measurement       |
+| **Guard band manager** | Manages overlap/gap between frequency slices                            |
 
 ---
 
@@ -301,31 +312,34 @@ int64_t offset = tick1 - tick0;  // Sample offset between devices
 ### Phase 1: Multi-Device Setup & PPS Sync (Weeks 1-3)
 
 #### Tasks:
+
 1. **Multi-device initialization with PPS**
+
    ```cpp
    // Create bonded USRP from two B210s sharing GPS PPS
    uhd::device_addr_t args;
    args["serial"] = "ABC123,DEF456";  // Both serials
-   
+
    auto usrp = uhd::usrp::multi_usrp::make(args);
-   
+
    // Configure PPS-only sync
    for (size_t mb = 0; mb < usrp->get_num_mboards(); ++mb) {
        usrp->set_clock_source("internal", mb);  // Each uses own TCXO
        usrp->set_time_source("external", mb);    // GPS PPS on SMA input
    }
-   
+
    // Synchronize at PPS edge (UHD handles edge detection)
    usrp->set_time_unknown_pps(uhd::time_spec_t(0.0));
    std::this_thread::sleep_for(std::chrono::seconds(2));
    ```
 
 2. **PPS presence verification**
+
    ```cpp
    bool verify_pps_present(uhd::usrp::multi_usrp::sptr usrp, size_t mboard) {
        // Record last PPS timestamp
        auto t0 = usrp->get_time_last_pps(mboard);
-       
+
        // Wait up to 2 seconds for a new PPS edge
        auto start = std::chrono::steady_clock::now();
        while (std::chrono::steady_clock::now() - start < std::chrono::seconds(2)) {
@@ -340,16 +354,17 @@ int64_t offset = tick1 - tick0;  // Sample offset between devices
    ```
 
 3. **Time sync verification**
+
    ```cpp
    void verify_time_sync(uhd::usrp::multi_usrp::sptr usrp) {
        // Wait for next PPS to latch consistent timestamps
        std::this_thread::sleep_for(std::chrono::seconds(1));
-       
+
        uhd::time_spec_t ref = usrp->get_time_last_pps(0);
        for (size_t mb = 1; mb < usrp->get_num_mboards(); ++mb) {
            uhd::time_spec_t t = usrp->get_time_last_pps(mb);
            double diff = std::abs(t.get_real_secs() - ref.get_real_secs());
-           
+
            // PPS edge is captured by FPGA with sub-µs precision
            // But since each board's TCXO has different rate, the
            // fractional second will drift between PPS edges
@@ -364,6 +379,7 @@ int64_t offset = tick1 - tick0;  // Sample offset between devices
    ```
 
 #### Deliverables:
+
 - Multi-B210 initialization with GPS PPS
 - PPS detection and verification
 - Time synchronization using `set_time_unknown_pps()`
@@ -374,7 +390,9 @@ int64_t offset = tick1 - tick0;  // Sample offset between devices
 ### Phase 2: Timestamp-Aligned Dual Streaming (Weeks 4-6)
 
 #### Tasks:
+
 1. **Simultaneous reception from both devices**
+
    ```cpp
    class bonded_receiver {
    public:
@@ -384,45 +402,45 @@ int64_t offset = tick1 - tick0;  // Sample offset between devices
            uhd::rx_metadata_t metadata;
            double center_freq;
        };
-       
+
        bonded_receiver(uhd::usrp::multi_usrp::sptr usrp,
                        double sample_rate,
                        double freq0, double freq1) {
            _usrp = usrp;
            _sample_rate = sample_rate;
-           
+
            // Configure frequencies (adjacent bands)
            usrp->set_rx_rate(sample_rate);
            usrp->set_rx_freq(freq0, 0);  // Device 0, ch 0
            usrp->set_rx_freq(freq1, 2);  // Device 1, ch 0
-           
+
            // Create separate streamers (one per device)
            uhd::stream_args_t args("fc32");
            args.channels = {0};
            _streams[0].streamer = usrp->get_rx_stream(args);
            _streams[0].center_freq = freq0;
-           
+
            args.channels = {2};
            _streams[1].streamer = usrp->get_rx_stream(args);
            _streams[1].center_freq = freq1;
-           
+
            // Allocate buffers
            for (auto& s : _streams) {
                s.buffer.resize(BUFFER_SIZE);
            }
        }
-       
+
        void start_streaming() {
            // Timed start: both devices begin at same time
            uhd::stream_cmd_t cmd(
                uhd::stream_cmd_t::STREAM_MODE_START_CONTINUOUS);
            cmd.stream_now = false;
            cmd.time_spec = _usrp->get_time_now() + uhd::time_spec_t(1.0);
-           
+
            _streams[0].streamer->issue_stream_cmd(cmd);
            _streams[1].streamer->issue_stream_cmd(cmd);
        }
-       
+
        // Receive one buffer from each device
        // Returns sample offset between devices (from timestamps)
        int64_t recv_aligned(size_t nsamps) {
@@ -432,20 +450,20 @@ int64_t offset = tick1 - tick0;  // Sample offset between devices
            size_t n1 = _streams[1].streamer->recv(
                &_streams[1].buffer[0], nsamps,
                _streams[1].metadata, 1.0);
-           
+
            // Check for errors
            if (_streams[0].metadata.error_code != uhd::rx_metadata_t::ERROR_CODE_NONE
             || _streams[1].metadata.error_code != uhd::rx_metadata_t::ERROR_CODE_NONE) {
                handle_stream_error();
                return -1;
            }
-           
+
            // Compute sample alignment from hardware timestamps
            int64_t tick0 = _streams[0].metadata.time_spec.to_ticks(_sample_rate);
            int64_t tick1 = _streams[1].metadata.time_spec.to_ticks(_sample_rate);
            return tick1 - tick0;
        }
-       
+
    private:
        uhd::usrp::multi_usrp::sptr _usrp;
        double _sample_rate;
@@ -455,52 +473,52 @@ int64_t offset = tick1 - tick0;  // Sample offset between devices
    ```
 
 2. **Timestamp alignment accounting for drift**
-   
+
    After PPS sync, each device's TCXO ticks at a slightly different rate.
    The `time_spec` timestamps will slowly diverge:
-   
+
    ```
    At PPS edge:     Device 0 time = 0.000000 s,  Device 1 time = 0.000000 s
    After 1 second:  Device 0 time = 1.000000 s,  Device 1 time = 1.000002 s  (2 ppm fast)
    After 10 seconds: Device 0 time = 10.00000 s, Device 1 time = 10.00002 s
    ```
-   
+
    This is actually useful: the divergence directly measures the frequency offset!
-   
+
    ```cpp
    // Track PPS-stamped times to measure drift
    double measure_drift_from_pps(uhd::usrp::multi_usrp::sptr usrp) {
        // Wait for next PPS and record both devices' timestamps
        auto pps0_a = usrp->get_time_last_pps(0);
        auto pps1_a = usrp->get_time_last_pps(1);
-       
+
        // Wait for several PPS edges (more = better accuracy)
        std::this_thread::sleep_for(std::chrono::seconds(10));
-       
+
        auto pps0_b = usrp->get_time_last_pps(0);
        auto pps1_b = usrp->get_time_last_pps(1);
-       
+
        // Elapsed time on each device's clock
        double elapsed0 = pps0_b.get_real_secs() - pps0_a.get_real_secs();
        double elapsed1 = pps1_b.get_real_secs() - pps1_a.get_real_secs();
-       
+
        // Drift in ppm (relative to device 0 as reference)
        // If elapsed1 > elapsed0, device 1's oscillator is faster
        double drift_ppm = ((elapsed1 - elapsed0) / elapsed0) * 1e6;
-       
+
        // Accuracy: with 10 PPS edges, each with ~100 ns uncertainty,
        // error = 100 ns / 10 s = 0.01 ppm — actually very good!
        return drift_ppm;
    }
    ```
-   
+
    **Key insight**: The PPS signal acts as a **calibration reference** — every second the GPS gives us a ground-truth timing edge. By comparing how each device's clock measures the interval between PPS edges, we get a precise drift estimate without any RF signals.
 
 3. **Handle overflow (dropped samples) gracefully**
    ```cpp
    void handle_stream_error() {
        for (size_t i = 0; i < 2; ++i) {
-           if (_streams[i].metadata.error_code 
+           if (_streams[i].metadata.error_code
                == uhd::rx_metadata_t::ERROR_CODE_OVERFLOW) {
                // Overflow = device produced samples faster than host consumed
                // The timestamp in next packet tells us exactly how many
@@ -515,6 +533,7 @@ int64_t offset = tick1 - tick0;  // Sample offset between devices
    ```
 
 #### Deliverables:
+
 - Simultaneous dual-device streaming
 - Timestamp-based sample alignment
 - PPS-based drift measurement (no RF signals needed!)
@@ -527,8 +546,9 @@ int64_t offset = tick1 - tick0;  // Sample offset between devices
 **This is the CRITICAL phase for PPS-only operation**
 
 #### Tasks:
+
 1. **Implement drift tracker with PPS-based method (primary)**
-   
+
    ```cpp
    class pps_drift_tracker {
    public:
@@ -538,7 +558,7 @@ int64_t offset = tick1 - tick0;  // Sample offset between devices
            uhd::time_spec_t last_update;
            int num_pps_samples;           // How many PPS edges used
        };
-       
+
        // PRIMARY METHOD: PPS timestamp comparison
        // This works because the GPS PPS arrives at a KNOWN 1 Hz rate.
        // Each device timestamps the PPS edge with its own clock.
@@ -549,27 +569,27 @@ int64_t offset = tick1 - tick0;  // Sample offset between devices
        ) {
            auto pps0 = usrp->get_time_last_pps(0);
            auto pps1 = usrp->get_time_last_pps(1);
-           
+
            // Store history for linear regression
            _pps_history.push_back({pps0, pps1});
            if (_pps_history.size() > MAX_HISTORY) {
                _pps_history.pop_front();
            }
-           
+
            drift_estimate est;
            if (_pps_history.size() >= 2) {
                // Linear regression of PPS timestamps over time
                // Slope = relative clock rate (1.0 = identical, 1.000002 = +2ppm)
                est.frequency_offset_ppm = compute_pps_drift_regression();
-               est.phase_rate_rad_per_s = 2.0 * M_PI * rf_center_freq 
+               est.phase_rate_rad_per_s = 2.0 * M_PI * rf_center_freq
                                           * (est.frequency_offset_ppm / 1e6);
                est.last_update = uhd::time_spec_t::get_system_time();
                est.num_pps_samples = _pps_history.size();
            }
-           
+
            return est;
        }
-       
+
    private:
        struct pps_sample {
            uhd::time_spec_t dev0_time;
@@ -577,7 +597,7 @@ int64_t offset = tick1 - tick0;  // Sample offset between devices
        };
        std::deque<pps_sample> _pps_history;
        static constexpr size_t MAX_HISTORY = 60;  // 1 minute of PPS data
-       
+
        double compute_pps_drift_regression() {
            // Fit: dev1_frac_sec = slope * dev0_frac_sec + offset
            // slope - 1.0 = frequency offset in fractional units
@@ -586,12 +606,12 @@ int64_t offset = tick1 - tick0;  // Sample offset between devices
            // With 10+ PPS samples and ~100 ns PPS jitter:
            // accuracy ≈ 100 ns / (N seconds) * 1e6 ppm
            //         ≈ 0.1/N ppm (e.g., 0.01 ppm after 10 seconds)
-           
+
            size_t n = _pps_history.size();
            double sum_x = 0, sum_y = 0, sum_xy = 0, sum_xx = 0;
-           
+
            for (size_t i = 0; i < n; ++i) {
-               double x = _pps_history[i].dev0_time.get_real_secs() 
+               double x = _pps_history[i].dev0_time.get_real_secs()
                         - _pps_history[0].dev0_time.get_real_secs();
                double y = _pps_history[i].dev1_time.get_real_secs()
                         - _pps_history[0].dev1_time.get_real_secs();
@@ -600,41 +620,42 @@ int64_t offset = tick1 - tick0;  // Sample offset between devices
                sum_xy += x * y;
                sum_xx += x * x;
            }
-           
-           double slope = (n * sum_xy - sum_x * sum_y) 
+
+           double slope = (n * sum_xy - sum_x * sum_y)
                         / (n * sum_xx - sum_x * sum_x);
            double drift_ppm = (slope - 1.0) * 1e6;
            return drift_ppm;
        }
    };
    ```
-   
+
    **Why PPS-based drift estimation is superior for this setup:**
    - No RF signals needed
    - Works during normal streaming (just read PPS timestamps)
    - Accuracy improves with time: ~0.01 ppm after 10 seconds
    - GPS gives us ground truth at 1 Hz — it's a free calibration signal
    - No need to tune devices to same frequency for calibration
-   
+
    **Accuracy analysis:**
+
    ```
    PPS jitter from GPS module: ~100 ns (typical u-blox)
    B210 PPS timestamping resolution: 1/sample_rate ≈ 18 ns at 56 MS/s
-   
+
    After N seconds of PPS data (linear regression):
    drift_accuracy ≈ sqrt(2) * PPS_jitter / N (seconds)
-   
+
    N = 5 seconds:  accuracy ≈ 28 ns / 5 s = 0.006 ppm ✓
    N = 10 seconds: accuracy ≈ 28 ns / 10 s = 0.003 ppm ✓
    N = 30 seconds: accuracy ≈ 28 ns / 30 s = 0.001 ppm ✓
-   
+
    This is MORE than enough for bandwidth aggregation!
    ```
 
 2. **Calibration mode: cross-correlation verification (secondary)**
-   
+
    For **initial verification only** — tune both devices to the **same** frequency temporarily to confirm PPS-based drift estimate:
-   
+
    ```cpp
    double verify_drift_with_cross_correlation(
        uhd::usrp::multi_usrp::sptr usrp,
@@ -645,38 +666,38 @@ int64_t offset = tick1 - tick0;  // Sample offset between devices
        // Save current frequencies
        double saved_freq0 = usrp->get_rx_freq(0);
        double saved_freq1 = usrp->get_rx_freq(2);
-       
+
        // Temporarily tune both to same frequency
        usrp->set_rx_freq(verification_freq, 0);
        usrp->set_rx_freq(verification_freq, 2);
        std::this_thread::sleep_for(std::chrono::milliseconds(100));
-       
+
        // Receive from both devices
        // (when tuned to same freq, they receive the same signal)
        // Cross-correlate to find time offset
        // Time offset change rate = frequency offset
-       
+
        // ... receive and cross-correlate ...
-       
+
        // Restore original frequencies
        usrp->set_rx_freq(saved_freq0, 0);
        usrp->set_rx_freq(saved_freq1, 2);
-       
+
        return measured_drift_ppm;
    }
    ```
-   
+
    **Important**: Cross-correlation only works when both devices receive the **same signal**. During normal bandwidth aggregation (different bands), this method cannot be used without retuning. Use the PPS method instead.
 
 3. **Phase correction using Volk (efficient)**
-   
+
    The core correction: compensate for the phase drift caused by the frequency offset between oscillators.
-   
+
    ```cpp
    class phase_corrector {
    public:
        // Apply phase correction to compensate for oscillator drift
-       // This corrects the effect of the frequency offset on the 
+       // This corrects the effect of the frequency offset on the
        // received signal — the IF/baseband signal rotates because
        // the LO is off by drift_ppm from the reference device
        void correct(
@@ -690,14 +711,14 @@ int64_t offset = tick1 - tick0;  // Sample offset between devices
            // Frequency offset at RF = drift_ppm * center_freq / 1e6
            // This manifests as a baseband frequency offset after mixing
            double freq_offset_hz = (drift_ppm / 1e6) * rf_center_freq;
-           
+
            // Phase rate in radians per sample
            double phase_rate = 2.0 * M_PI * freq_offset_hz / sample_rate;
-           
+
            // Initial phase = accumulated since last sync point
-           double initial_phase = 2.0 * M_PI * freq_offset_hz 
+           double initial_phase = 2.0 * M_PI * freq_offset_hz
                                 * time_since_sync_seconds;
-           
+
            // Use Volk for efficient complex rotation
            // volk_32fc_s32fc_rotator_32fc does:
            //   output[i] = input[i] * phase * (phase_inc)^i
@@ -705,36 +726,36 @@ int64_t offset = tick1 - tick0;  // Sample offset between devices
                std::cos(-phase_rate), std::sin(-phase_rate));
            lv_32fc_t phase = lv_cmake(
                std::cos(-initial_phase), std::sin(-initial_phase));
-           
+
            volk_32fc_s32fc_rotator_32fc(
                samples, samples, phase_inc, &phase, nsamps);
        }
    };
    ```
-   
+
    **Why phase correction alone is sufficient (no resampling needed):**
-   
+
    At 2 ppm drift and 56 MS/s sample rate:
-   - Sample rate mismatch: 56e6 * 2e-6 = 112 samples/second
+   - Sample rate mismatch: 56e6 \* 2e-6 = 112 samples/second
    - Over a 1-second buffer: 112 samples slip out of 56 million = 0.0002%
    - Over a 100 ms buffer (typical FFT window): 11.2 samples slip
-   
+
    For **frequency-domain stitching** (which this project does):
    - Each device produces an independent spectrum
    - The spectra are placed side-by-side in frequency
    - Sample rate mismatch means one spectrum is slightly stretched/compressed
    - At 2 ppm, the stretch is 2 parts per million — **negligible on a spectrum plot**
    - The phase offset IS significant and must be corrected for clean stitching
-   
+
    **Resampling is only needed if** you need sample-level time alignment for
    coherent combination of overlapping bands. For adjacent-band stitching with
    guard bands, phase correction alone is sufficient.
 
 4. **Optional: Fractional resampler for long captures**
-   
+
    If captures run >30 seconds without recalibration, sample slip may become
    noticeable. Use a simple linear interpolator:
-   
+
    ```cpp
    // Simple fractional delay for drift compensation
    // Only needed for very long captures or tight stitching
@@ -747,7 +768,7 @@ int64_t offset = tick1 - tick0;  // Sample offset between devices
            double pos = i * rate_ratio;
            size_t idx = static_cast<size_t>(pos);
            double frac = pos - idx;
-           
+
            if (idx + 1 < in_len) {
                output[i] = input[idx] * static_cast<float>(1.0 - frac)
                          + input[idx + 1] * static_cast<float>(frac);
@@ -757,6 +778,7 @@ int64_t offset = tick1 - tick0;  // Sample offset between devices
    ```
 
 #### Deliverables:
+
 - PPS-based drift estimation (primary, no RF needed)
 - Cross-correlation verification mode (secondary)
 - Volk-optimized phase correction
@@ -768,14 +790,15 @@ int64_t offset = tick1 - tick0;  // Sample offset between devices
 ### Phase 4: Frequency-Domain Band Stitching (Weeks 11-14)
 
 #### Tasks:
+
 1. **FFT-based spectrum stitching**
-   
+
    Each device receives an adjacent frequency band. We stitch them in the frequency domain:
-   
+
    ```cpp
    class spectrum_stitcher {
    public:
-       spectrum_stitcher(double sample_rate, size_t fft_size, 
+       spectrum_stitcher(double sample_rate, size_t fft_size,
                          double guard_band_hz)
            : _sample_rate(sample_rate)
            , _fft_size(fft_size)
@@ -786,7 +809,7 @@ int64_t offset = tick1 - tick0;  // Sample offset between devices
            _window.resize(fft_size);
            create_blackman_harris_window(_window.data(), fft_size);
        }
-       
+
        // Stitch two adjacent bands into one wider spectrum
        // Device 0: center_freq0, bandwidth = sample_rate
        // Device 1: center_freq1 = center_freq0 + sample_rate - guard_band
@@ -799,28 +822,28 @@ int64_t offset = tick1 - tick0;  // Sample offset between devices
            // Apply window functions
            apply_window(buf0, _windowed0.data(), _fft_size);
            apply_window(buf1, _windowed1.data(), _fft_size);
-           
+
            // FFT each device's data
            fft_forward(_windowed0.data(), _spectrum0.data(), _fft_size);
            fft_forward(_windowed1.data(), _spectrum1.data(), _fft_size);
-           
+
            // Place in output spectrum:
            //   output = [dev0_lower_bins | overlap_blend | dev1_upper_bins]
            size_t usable_bins = _fft_size - 2 * _guard_band_bins;
-           
+
            // Device 0: take bins from guard_band to fft_size/2
            // (upper half of device 0's spectrum)
            size_t out_idx = 0;
            for (size_t i = _guard_band_bins; i < _fft_size - _guard_band_bins; ++i) {
                output_spectrum[out_idx++] = _spectrum0[i];
            }
-           
+
            // Device 1: take bins from guard_band to fft_size/2
            for (size_t i = _guard_band_bins; i < _fft_size - _guard_band_bins; ++i) {
                output_spectrum[out_idx++] = _spectrum1[i];
            }
        }
-       
+
    private:
        double _sample_rate;
        size_t _fft_size;
@@ -832,36 +855,36 @@ int64_t offset = tick1 - tick0;  // Sample offset between devices
    ```
 
 2. **Guard band sizing**
-   
+
    Guard bands serve two purposes:
    - **Filter rolloff**: B210 analog frontend rolls off at band edges
    - **Drift margin**: With PPS-only sync, the band edges shift slightly with drift
-   
+
    ```cpp
    double calculate_guard_band_hz(double sample_rate, double drift_ppm) {
        // B210 analog filter rolloff: ~10% of bandwidth at edges
        double filter_guard = sample_rate * 0.10;
-       
+
        // Drift margin: max frequency shift from oscillator offset
        // At 2 ppm, the LO is off by 2 ppm * center_freq
        // But the band edge only shifts by 2 ppm * sample_rate
        // (because sample rate determines bandwidth)
        double drift_guard = sample_rate * drift_ppm / 1e6;
        // At 56 MS/s, 5 ppm = 280 Hz — negligible!
-       
+
        // Total guard band dominated by analog filter, NOT drift
        return filter_guard;  // ~5.6 MHz for 56 MS/s
        // Effective bandwidth per device: ~44.8 MHz
        // Two devices: ~89.6 MHz total
    }
    ```
-   
+
    **Important realization**: The guard band is dominated by the B210's analog filter rolloff (~10%), not by oscillator drift. Even 5 ppm drift only shifts the band by 280 Hz at 56 MS/s — completely negligible compared to the MHz-scale filter rolloff.
 
 3. **Overlap blending for adjacent bands**
-   
+
    If devices are tuned with intentional frequency overlap, use weighted blending:
-   
+
    ```cpp
    void blend_overlap_region(
        std::complex<float>* output,
@@ -880,6 +903,7 @@ int64_t offset = tick1 - tick0;  // Sample offset between devices
    ```
 
 4. **Bonded RX streamer interface**
+
    ```cpp
    class bonded_rx_streamer {
    public:
@@ -890,14 +914,14 @@ int64_t offset = tick1 - tick0;  // Sample offset between devices
            double total_bandwidth       // Desired total BW
        ) {
            _sample_rate = sample_rate;
-           
+
            // Calculate per-device tuning
            // Device 0: center - BW/4
            // Device 1: center + BW/4
            double half_device_bw = sample_rate / 2.0;
            double freq0 = center_freq - half_device_bw + _guard_band / 2.0;
            double freq1 = center_freq + half_device_bw - _guard_band / 2.0;
-           
+
            _receiver = std::make_unique<bonded_receiver>(
                usrp, sample_rate, freq0, freq1);
            _stitcher = std::make_unique<spectrum_stitcher>(
@@ -905,16 +929,16 @@ int64_t offset = tick1 - tick0;  // Sample offset between devices
            _drift_tracker = std::make_unique<pps_drift_tracker>();
            _phase_corrector = std::make_unique<phase_corrector>();
        }
-       
+
        // Main receive function — returns stitched wideband data
        size_t recv(std::complex<float>* output, size_t nsamps,
                    uhd::rx_metadata_t& metadata, double timeout) {
            // 1. Receive from both devices
            int64_t offset = _receiver->recv_aligned(nsamps);
-           
+
            // 2. Update drift estimate from PPS (non-blocking check)
            auto drift = _drift_tracker->get_latest_estimate();
-           
+
            // 3. Apply phase correction to device 1's data
            double time_now = _receiver->get_stream_time();
            _phase_corrector->correct(
@@ -922,21 +946,21 @@ int64_t offset = tick1 - tick0;  // Sample offset between devices
                drift.frequency_offset_ppm,
                _receiver->get_freq(1),
                _sample_rate, time_now);
-           
+
            // 4. Stitch in frequency domain
            _stitcher->stitch(
                _receiver->get_buffer(0), nsamps,
                _receiver->get_buffer(1), nsamps,
                output, nsamps);
-           
+
            return nsamps;
        }
-       
+
    private:
        double _sample_rate;
        double _guard_band = 5.6e6;  // 10% of 56 MS/s
        static constexpr size_t FFT_SIZE = 4096;
-       
+
        std::unique_ptr<bonded_receiver> _receiver;
        std::unique_ptr<spectrum_stitcher> _stitcher;
        std::unique_ptr<pps_drift_tracker> _drift_tracker;
@@ -945,6 +969,7 @@ int64_t offset = tick1 - tick0;  // Sample offset between devices
    ```
 
 5. **Background PPS drift tracking thread**
+
    ```cpp
    // Runs in background, polls PPS timestamps every second
    void drift_tracking_thread(
@@ -956,12 +981,12 @@ int64_t offset = tick1 - tick0;  // Sample offset between devices
        while (running) {
            // Wait for next PPS edge
            auto last_pps = usrp->get_time_last_pps(0);
-           while (usrp->get_time_last_pps(0).get_full_secs() 
+           while (usrp->get_time_last_pps(0).get_full_secs()
                   == last_pps.get_full_secs()) {
                std::this_thread::sleep_for(std::chrono::milliseconds(50));
                if (!running) return;
            }
-           
+
            // Record PPS timestamps from both devices
            tracker->update_from_pps(usrp, rf_center_freq);
        }
@@ -969,6 +994,7 @@ int64_t offset = tick1 - tick0;  // Sample offset between devices
    ```
 
 #### Deliverables:
+
 - FFT-based spectrum stitching
 - Guard band calculation (properly dominated by analog filter, not drift)
 - Overlap blending
@@ -980,33 +1006,34 @@ int64_t offset = tick1 - tick0;  // Sample offset between devices
 ### Phase 5: Long-term Stability & Recalibration (Weeks 15-17)
 
 #### Tasks:
+
 1. **Continuous PPS monitoring and drift tracking**
 
    Since we have GPS PPS arriving every second, drift tracking is continuous and free:
-   
+
    ```cpp
    class continuous_drift_monitor {
    public:
        void on_pps_tick(uhd::usrp::multi_usrp::sptr usrp) {
            auto pps0 = usrp->get_time_last_pps(0);
            auto pps1 = usrp->get_time_last_pps(1);
-           
-           _pps_log.push_back({pps0, pps1, 
+
+           _pps_log.push_back({pps0, pps1,
                std::chrono::steady_clock::now()});
-           
+
            // Keep rolling window of last 60 samples
            if (_pps_log.size() > 60) _pps_log.pop_front();
-           
+
            // Update drift estimate
            _current_drift_ppm = compute_drift_from_window();
-           
+
            // Check for anomalies
            if (std::abs(_current_drift_ppm) > 10.0) {
                std::cerr << "WARNING: Drift exceeding 10 ppm ("
                          << _current_drift_ppm << " ppm). "
                          << "Check TCXO health." << std::endl;
            }
-           
+
            // Log for post-processing
            if (_log_file.is_open()) {
                _log_file << pps0.get_real_secs() << ","
@@ -1014,9 +1041,9 @@ int64_t offset = tick1 - tick0;  // Sample offset between devices
                          << _current_drift_ppm << std::endl;
            }
        }
-       
+
        double get_current_drift_ppm() const { return _current_drift_ppm; }
-       
+
    private:
        std::deque<pps_record> _pps_log;
        double _current_drift_ppm = 0.0;
@@ -1025,9 +1052,9 @@ int64_t offset = tick1 - tick0;  // Sample offset between devices
    ```
 
 2. **Periodic PPS re-sync (optional, for very long runs)**
-   
+
    After many hours, accumulated numerical errors may warrant a time re-sync:
-   
+
    ```cpp
    void periodic_resync(uhd::usrp::multi_usrp::sptr usrp,
                         double hours_between_resyncs = 4.0) {
@@ -1036,13 +1063,14 @@ int64_t offset = tick1 - tick0;  // Sample offset between devices
        // The drift tracker adapts immediately
        usrp->set_time_unknown_pps(uhd::time_spec_t(0.0));
        std::this_thread::sleep_for(std::chrono::seconds(2));
-       
+
        // Reset drift tracker history (start fresh regression)
        _drift_tracker->reset_history();
    }
    ```
 
 3. **Quality metrics**
+
    ```cpp
    struct bonding_quality_metrics {
        double drift_ppm;              // Current estimated drift
@@ -1052,7 +1080,7 @@ int64_t offset = tick1 - tick0;  // Sample offset between devices
        double phase_correction_rate;  // Rad/s being applied
        double guard_band_utilization; // How much of guard band is "used" by drift
        bool healthy;                  // Overall system health
-       
+
        std::string to_string() const {
            std::stringstream ss;
            ss << "Drift: " << drift_ppm << " ppm"
@@ -1066,6 +1094,7 @@ int64_t offset = tick1 - tick0;  // Sample offset between devices
    ```
 
 #### Deliverables:
+
 - Continuous PPS-based drift monitoring
 - Anomaly detection
 - Optional periodic re-sync
@@ -1076,6 +1105,7 @@ int64_t offset = tick1 - tick0;  // Sample offset between devices
 ### Phase 6: Testing & Validation (Weeks 18-22)
 
 #### Hardware Test Setup:
+
 ```
 GPS Module (u-blox NEO-M8N or similar)
     |
@@ -1092,6 +1122,7 @@ GPS Module (u-blox NEO-M8N or similar)
 ```
 
 #### Test 1: PPS Synchronization Verification
+
 ```
 Procedure:
 1. Connect GPS PPS to both B210s
@@ -1105,6 +1136,7 @@ Success Criteria:
 ```
 
 #### Test 2: Drift Estimation Accuracy
+
 ```
 Procedure:
 1. Sync both devices via PPS
@@ -1119,6 +1151,7 @@ Success Criteria:
 ```
 
 #### Test 3: Spectrum Stitching Quality
+
 ```
 Procedure:
 1. Connect FM antenna to both devices via splitter
@@ -1136,6 +1169,7 @@ Success Criteria:
 ```
 
 #### Test 4: Long-Duration Stability (8-hour Test)
+
 ```
 Procedure:
 1. Set up stitched wideband reception
@@ -1154,6 +1188,7 @@ Success Criteria:
 ```
 
 #### Test 5: Environmental Stress
+
 ```
 Procedure:
 1. Place one B210 in direct sunlight / near heat source
@@ -1167,6 +1202,7 @@ Expected Results:
 ```
 
 #### Test 6: Non-Coherent Multi-Band (Easiest Case)
+
 ```
 Procedure:
 1. Tune Device 0 to 900 MHz (GSM band)
@@ -1182,18 +1218,19 @@ Success Criteria:
 
 #### Performance Metrics to Collect
 
-| Metric | Target | How to Measure |
-|--------|--------|----------------|
-| PPS sync accuracy | <1 µs | Compare `get_time_last_pps()` across boards |
-| Drift estimation accuracy | <0.05 ppm | Compare PPS method vs cross-correlation verification |
-| Drift convergence time | <10 seconds | Time from startup to stable estimate |
-| Phase correction overhead | <5% CPU | Profile `volk_32fc_s32fc_rotator_32fc` calls |
-| FFT stitching overhead | <15% CPU | Profile FFT + windowing + blending |
-| Stitch boundary artifact | <-40 dBc | Measure with broadband noise source |
-| Max continuous run time | >8 hours | Long-duration test |
-| Overflow rate | <1 per hour | Count `ERROR_CODE_OVERFLOW` events |
+| Metric                    | Target      | How to Measure                                       |
+| ------------------------- | ----------- | ---------------------------------------------------- |
+| PPS sync accuracy         | <1 µs       | Compare `get_time_last_pps()` across boards          |
+| Drift estimation accuracy | <0.05 ppm   | Compare PPS method vs cross-correlation verification |
+| Drift convergence time    | <10 seconds | Time from startup to stable estimate                 |
+| Phase correction overhead | <5% CPU     | Profile `volk_32fc_s32fc_rotator_32fc` calls         |
+| FFT stitching overhead    | <15% CPU    | Profile FFT + windowing + blending                   |
+| Stitch boundary artifact  | <-40 dBc    | Measure with broadband noise source                  |
+| Max continuous run time   | >8 hours    | Long-duration test                                   |
+| Overflow rate             | <1 per hour | Count `ERROR_CODE_OVERFLOW` events                   |
 
 #### Deliverables:
+
 - Complete test suite with pass/fail criteria
 - Performance benchmark results
 - Long-term stability data
@@ -1223,46 +1260,48 @@ GPS Module (1PPS output)
 ```
 
 **GPS Module Requirements:**
+
 - Must have PPS output (1 pulse per second)
 - 3.3V CMOS compatible with B210 PPS input
 - Typical PPS accuracy: 10-100 ns (any GPS module is adequate)
 - Do NOT need timing-grade GPS — even $15 modules have <1 µs PPS jitter
 
 **PPS Signal Distribution:**
+
 - For 2 devices: Simple SMA Y-splitter ($5) is sufficient
 - For 3+ devices: Use CMOS buffer IC (74HC14 or 74LVC1G17) to avoid signal degradation
 - Cable length: <10 meters (keep jitter < 50 ns, which is negligible)
 
 ### 6.2 PPS Signal Quality
 
-| Parameter | Requirement | Typical GPS Module |
-|-----------|-------------|-------------------|
-| **Voltage Level** | 3.3V CMOS | 3.3V CMOS |
-| **Rise Time** | <100 ns | 10-50 ns |
-| **Jitter** | <1 µs | 10-100 ns |
-| **Rate** | 1 Hz | 1 Hz |
-| **Pulse Width** | >10 µs | 100 ms typical |
+| Parameter         | Requirement | Typical GPS Module |
+| ----------------- | ----------- | ------------------ |
+| **Voltage Level** | 3.3V CMOS   | 3.3V CMOS          |
+| **Rise Time**     | <100 ns     | 10-50 ns           |
+| **Jitter**        | <1 µs       | 10-100 ns          |
+| **Rate**          | 1 Hz        | 1 Hz               |
+| **Pulse Width**   | >10 µs      | 100 ms typical     |
 
 ### 6.3 Synchronization Sequence (Detailed)
 
 ```cpp
 void initialize_bonded_pps_only(
-    const std::string& serial0, 
+    const std::string& serial0,
     const std::string& serial1
 ) {
     // 1. Open both devices as one multi_usrp
     auto usrp = uhd::usrp::multi_usrp::make(
         "serial=" + serial0 + ",serial=" + serial1
     );
-    std::cout << "Opened " << usrp->get_num_mboards() 
+    std::cout << "Opened " << usrp->get_num_mboards()
               << " boards" << std::endl;
-    
+
     // 2. Configure clock and time sources
     for (size_t mb = 0; mb < usrp->get_num_mboards(); ++mb) {
         usrp->set_clock_source("internal", mb);  // Each board uses own TCXO
         usrp->set_time_source("external", mb);    // PPS from GPS on SMA
     }
-    
+
     // 3. Verify PPS is present on all boards
     for (size_t mb = 0; mb < usrp->get_num_mboards(); ++mb) {
         auto t0 = usrp->get_time_last_pps(mb);
@@ -1270,12 +1309,12 @@ void initialize_bonded_pps_only(
         auto t1 = usrp->get_time_last_pps(mb);
         if (t1.get_full_secs() == t0.get_full_secs()) {
             throw uhd::runtime_error(
-                "No PPS detected on board " + std::to_string(mb) 
+                "No PPS detected on board " + std::to_string(mb)
                 + ". Check GPS module and SMA cable.");
         }
         std::cout << "Board " << mb << ": PPS OK" << std::endl;
     }
-    
+
     // 4. Synchronize times at PPS edge
     // set_time_unknown_pps() handles edge detection internally:
     //   - Polls get_time_last_pps() until it transitions
@@ -1283,21 +1322,21 @@ void initialize_bonded_pps_only(
     //   - Waits for next PPS to latch the time
     usrp->set_time_unknown_pps(uhd::time_spec_t(0.0));
     std::this_thread::sleep_for(std::chrono::seconds(2));
-    
+
     // 5. Verify alignment
     auto t0 = usrp->get_time_last_pps(0);
     auto t1 = usrp->get_time_last_pps(1);
     double diff = std::abs(t0.get_real_secs() - t1.get_real_secs());
     std::cout << "Time alignment: " << diff * 1e9 << " ns" << std::endl;
-    
+
     if (diff > 0.001) {
-        throw uhd::runtime_error("PPS time sync failed: " 
+        throw uhd::runtime_error("PPS time sync failed: "
             + std::to_string(diff * 1e6) + " µs difference");
     }
-    
+
     std::cout << "PPS-only synchronization complete" << std::endl;
     std::cout << "NOTE: Devices use independent TCXOs." << std::endl;
-    std::cout << "Drift tracking will compensate for oscillator offset." 
+    std::cout << "Drift tracking will compensate for oscillator offset."
               << std::endl;
 }
 ```
@@ -1321,8 +1360,8 @@ Device 0 clock:    0.000000      1.000000       2.000000
 Device 1 clock:    0.000000      1.000002       2.000004  (2 ppm fast)
                    |              |              |
 USB delivers       ~3ms later    ~5ms later     ~2ms later  (variable!)
-packets to host                   
-                   
+packets to host
+
 But metadata.time_spec = device clock time, NOT USB arrival time
 So alignment is based on device timestamps, immune to USB jitter
 ```
@@ -1336,6 +1375,7 @@ So alignment is based on device timestamps, immune to USB jitter
 This is the **single best method** for PPS-only bonding. It requires no RF signals, no external equipment, and runs continuously during normal operation.
 
 **How it works:**
+
 1. The GPS PPS pulse arrives at both B210s simultaneously (within ~100 ns)
 2. Each B210's FPGA timestamps the PPS edge using its local TCXO-derived clock
 3. Over time, the timestamps diverge because the TCXOs run at slightly different rates
@@ -1352,12 +1392,12 @@ public:
         size_t num_samples;         // PPS edges used in regression
         bool valid;                 // Enough data for reliable estimate
     };
-    
+
     result update(uhd::usrp::multi_usrp::sptr usrp, double rf_freq) {
         // Read PPS timestamps from both boards
         double t0 = usrp->get_time_last_pps(0).get_real_secs();
         double t1 = usrp->get_time_last_pps(1).get_real_secs();
-        
+
         if (_history.empty() || t0 != _history.back().t0) {
             // New PPS edge — store it
             _history.push_back({t0, t1});
@@ -1365,39 +1405,39 @@ public:
                 _history.pop_front();
             }
         }
-        
+
         result r;
         r.num_samples = _history.size();
         r.valid = (r.num_samples >= 3);
-        
+
         if (!r.valid) {
             r.drift_ppm = 0.0;
             r.uncertainty_ppm = 999.0;
             r.phase_rate_rad_s = 0.0;
             return r;
         }
-        
+
         // Linear regression: t1 = slope * t0 + offset
         // drift_ppm = (slope - 1.0) * 1e6
         double n = r.num_samples;
         double sx = 0, sy = 0, sxy = 0, sxx = 0;
         double t0_base = _history.front().t0;
-        
+
         for (auto& h : _history) {
             double x = h.t0 - t0_base;
             double y = h.t1 - _history.front().t1;
             sx += x; sy += y; sxy += x * y; sxx += x * x;
         }
-        
+
         double denom = n * sxx - sx * sx;
         if (std::abs(denom) < 1e-20) {
             r.valid = false;
             return r;
         }
-        
+
         double slope = (n * sxy - sx * sy) / denom;
         r.drift_ppm = (slope - 1.0) * 1e6;
-        
+
         // Uncertainty estimate
         // PPS jitter ~100 ns, timestamping resolution ~18 ns at 56 MS/s
         // Combined uncertainty per point: ~102 ns
@@ -1410,15 +1450,15 @@ public:
         } else {
             r.uncertainty_ppm = 999.0;
         }
-        
+
         // Phase rate for correction
         r.phase_rate_rad_s = 2.0 * M_PI * rf_freq * (r.drift_ppm / 1e6);
-        
+
         return r;
     }
-    
+
     void reset() { _history.clear(); }
-    
+
 private:
     struct pps_point { double t0, t1; };
     std::deque<pps_point> _history;
@@ -1428,13 +1468,13 @@ private:
 
 **Expected accuracy over time:**
 
-| PPS Edges | Time Span | Accuracy (ppm) | Phase Error at 2.4 GHz |
-|-----------|-----------|----------------|------------------------|
-| 3 | 3 seconds | ~0.05 | ~43° per second |
-| 5 | 5 seconds | ~0.03 | ~26° per second |
-| 10 | 10 seconds | ~0.015 | ~13° per second |
-| 30 | 30 seconds | ~0.005 | ~4° per second |
-| 60 | 60 seconds | ~0.002 | ~2° per second |
+| PPS Edges | Time Span  | Accuracy (ppm) | Phase Error at 2.4 GHz |
+| --------- | ---------- | -------------- | ---------------------- |
+| 3         | 3 seconds  | ~0.05          | ~43° per second        |
+| 5         | 5 seconds  | ~0.03          | ~26° per second        |
+| 10        | 10 seconds | ~0.015         | ~13° per second        |
+| 30        | 30 seconds | ~0.005         | ~4° per second         |
+| 60        | 60 seconds | ~0.002         | ~2° per second         |
 
 After 10 seconds, drift accuracy is well under 0.1 ppm — more than sufficient for spectrum stitching.
 
@@ -1451,18 +1491,18 @@ double verify_drift_xcorr(
     // Temporarily tune both devices to the same frequency
     double orig_freq0 = usrp->get_rx_freq(0);
     double orig_freq1 = usrp->get_rx_freq(2);
-    
+
     usrp->set_rx_freq(verify_freq, 0);
     usrp->set_rx_freq(verify_freq, 2);
     std::this_thread::sleep_for(std::chrono::milliseconds(200));
-    
+
     // Capture two sequential bursts, measure phase change between them
     // ... (receive and cross-correlate) ...
-    
+
     // Restore original frequencies
     usrp->set_rx_freq(orig_freq0, 0);
     usrp->set_rx_freq(orig_freq1, 2);
-    
+
     return measured_drift_ppm;
 }
 ```
@@ -1474,10 +1514,10 @@ The primary correction mechanism: apply a per-sample phase rotation to undo the 
 **Why this is the right approach:**
 
 The oscillator offset of device 1 causes two effects:
+
 1. **LO offset**: The local oscillator is off by `drift_ppm * center_freq` Hz
    → Manifests as a baseband frequency offset (phase rotation)
    → **Must correct** for clean stitching
-   
 2. **Sample rate offset**: The ADC clock is off by `drift_ppm * sample_rate` Hz
    → Manifests as slight time stretch (resampling needed to fix)
    → At 2 ppm and 56 MS/s: 112 samples/second drift
@@ -1499,7 +1539,7 @@ void apply_phase_correction(
     // Calculate correction frequency
     double freq_offset_hz = (drift_ppm / 1e6) * rf_center_freq;
     double phase_inc_per_sample = 2.0 * M_PI * freq_offset_hz / sample_rate;
-    
+
     // Use Volk rotator for SIMD-accelerated correction
     lv_32fc_t phase_inc = lv_cmake(
         std::cos(-phase_inc_per_sample),
@@ -1509,11 +1549,11 @@ void apply_phase_correction(
         std::cos(-accumulated_phase),
         std::sin(-accumulated_phase)
     );
-    
+
     volk_32fc_s32fc_rotator_32fc(
         samples, samples, phase_inc, &phase, nsamps
     );
-    
+
     // Update accumulated phase for next call
     accumulated_phase += phase_inc_per_sample * nsamps;
     // Keep in [-π, π] to avoid floating point issues
@@ -1527,12 +1567,12 @@ void apply_phase_correction(
 
 Only if you need **time-domain sample alignment** for coherent combination of overlapping bands. For adjacent-band stitching with guard bands, resampling is unnecessary.
 
-| Use Case | Resampling Needed? | Why |
-|----------|-------------------|-----|
-| Adjacent-band stitching | **No** | FFT windows are short; 0.008 samples/FFT drift is negligible |
-| Non-coherent multi-band | **No** | Bands are independent |
-| Coherent overlapping bands | **Yes** | Need sample-level alignment for constructive addition |
-| Long captures without recal | **Maybe** | After 100+ seconds, sample slip may become noticeable |
+| Use Case                    | Resampling Needed? | Why                                                          |
+| --------------------------- | ------------------ | ------------------------------------------------------------ |
+| Adjacent-band stitching     | **No**             | FFT windows are short; 0.008 samples/FFT drift is negligible |
+| Non-coherent multi-band     | **No**             | Bands are independent                                        |
+| Coherent overlapping bands  | **Yes**            | Need sample-level alignment for constructive addition        |
+| Long captures without recal | **Maybe**          | After 100+ seconds, sample slip may become noticeable        |
 
 If resampling IS needed, a simple linear interpolator suffices for 2 ppm correction:
 
@@ -1562,14 +1602,14 @@ For each buffer of samples from Device 1:
 
 1. Get current drift estimate from PPS tracker
    (background thread updates every PPS edge = every second)
-   
+
 2. Apply phase correction (Volk rotator)
    - Compensates LO offset
    - ~11% CPU at 56 MS/s
    - This is the ONLY correction needed for spectrum stitching
-   
+
 3. FFT and stitch with Device 0's spectrum
-   
+
 No resampling. No pilot tones. No cross-correlation during streaming.
 The GPS PPS signal does all the calibration work automatically.
 ```
@@ -1583,10 +1623,12 @@ The GPS PPS signal does all the calibration work automatically.
 **Problem**: Two B210s at 56 MS/s each = 112 MS/s total × 4 bytes/sample × 2 (I+Q already in complex) = ~448 MB/s USB throughput, plus FFT processing.
 
 **Impact**:
+
 - May exceed USB 3.0 bandwidth if both devices are on the same USB controller
 - Processing overhead: FFT + phase correction + stitching = significant CPU load
 
 **Mitigations**:
+
 1. **Use separate USB controllers** for each B210 (check with `lsusb -t`)
 2. **Reduce sample rate** if full 56 MS/s not needed (e.g., 20 MS/s per device = 40 MS/s combined still gives 36 MHz usable BW)
 3. **Use `uhd::transport::zero_copy`** buffers to minimize copies
@@ -1597,10 +1639,12 @@ The GPS PPS signal does all the calibration work automatically.
 **Problem**: TCXO drift isn't constant — it changes with temperature (~0.1 ppm/°C).
 
 **Impact**:
+
 - Phase correction based on stale drift estimate degrades over time
 - Temperature transients (e.g., startup, sun exposure) cause rapid drift changes
 
 **Mitigations**:
+
 1. **PPS drift tracker updates every second** → drift estimate is always <1 second old
 2. **Linear regression over 10-30 second window** → captures trend, not just instant value
 3. **Allow 5-10 minute warm-up** at startup for TCXO to stabilize
@@ -1612,11 +1656,13 @@ The GPS PPS signal does all the calibration work automatically.
 **Problem**: GPS module loses satellite lock → PPS stops → time bases diverge.
 
 **Impact**:
+
 - Drift tracker stops getting new PPS data
 - Phase correction continues with last known drift estimate (OK for ~30 seconds)
 - After minutes, accumulated error becomes significant
 
 **Mitigations**:
+
 1. **Detect PPS loss immediately** (monitor `get_time_last_pps()` changes)
 2. **Hold last drift estimate** — TCXO drift changes slowly, so last estimate is valid for ~30-60 seconds
 3. **Warn user** when PPS loss exceeds 30 seconds
@@ -1627,7 +1673,7 @@ The GPS PPS signal does all the calibration work automatically.
 bool check_pps_health(uhd::usrp::multi_usrp::sptr usrp) {
     static uhd::time_spec_t last_pps;
     auto current_pps = usrp->get_time_last_pps(0);
-    
+
     if (current_pps.get_full_secs() == last_pps.get_full_secs()) {
         // PPS hasn't changed — might be missing
         return false;  // Caller should check how long it's been
@@ -1642,10 +1688,12 @@ bool check_pps_health(uhd::usrp::multi_usrp::sptr usrp) {
 **Problem**: PPS-only cannot achieve phase coherence between devices. Applications requiring constructive signal combination (beamforming, coherent MIMO) won't work.
 
 **Impact**:
+
 - Cannot combine overlapping bands coherently (signals don't add constructively)
 - Phase noise is uncorrelated between devices
 
 **Mitigations**:
+
 1. **Design for non-coherent stitching** — place bands adjacent, not overlapping
 2. **Use guard bands** at boundaries (dominated by analog filter rolloff anyway)
 3. **Document clearly**: PPS-only is for bandwidth extension, not coherent gain
@@ -1656,10 +1704,12 @@ bool check_pps_health(uhd::usrp::multi_usrp::sptr usrp) {
 **Problem**: If host can't consume data fast enough, USB buffers overflow. With two devices, overflows may occur at different times, complicating sample alignment.
 
 **Impact**:
+
 - Lost samples create gaps in one device's stream
 - Timestamp alignment becomes offset by the gap
 
 **Mitigations**:
+
 1. **Hardware timestamps recover automatically** — after an overflow, the next packet's `time_spec` shows the correct time, so alignment resumes
 2. **Detect overflows via `rx_metadata_t.error_code == ERROR_CODE_OVERFLOW`**
 3. **Use larger USB buffers**: `args["recv_buff_size"] = "..." `
@@ -1672,20 +1722,20 @@ bool check_pps_health(uhd::usrp::multi_usrp::sptr usrp) {
 
 ### 9.1 Side-by-Side Comparison
 
-| Aspect | PPS-Only | 10MHz + PPS | Winner |
-|--------|----------|-------------|--------|
-| **Hardware Cost** | $50-100 (GPS + cables) | $500-1500 (GPSDO + splitter) | PPS-Only |
-| **Setup Complexity** | Low (1 SMA cable per device) | Medium (2 cables + RF splitter) | PPS-Only |
-| **Time Sync Accuracy** | ~100 ns (GPS PPS jitter) | ~10 ns (locked oscillators) | 10MHz+PPS |
-| **Frequency Accuracy** | 0.01 ppm (after PPS-based cal) | <0.001 ppm (hardware-locked) | 10MHz+PPS |
-| **Phase Coherence** | Software-corrected (good for stitching) | Hardware-locked (excellent) | 10MHz+PPS |
-| **Sample Rate Match** | Differs by ±4 ppm | Identical | 10MHz+PPS |
-| **Drift Compensation** | Phase rotation only (low CPU) | Not needed | 10MHz+PPS |
-| **Coherent Combination** | Not possible | Excellent | 10MHz+PPS |
-| **Adjacent-Band Stitching** | Good (with phase correction) | Excellent | 10MHz+PPS (marginal) |
-| **Non-Coherent Multi-Band** | Excellent (trivial) | Excellent (overkill) | Tie |
-| **Software Complexity** | Moderate (drift tracker + phase corrector) | Low | 10MHz+PPS |
-| **Portability** | Excellent (GPS works everywhere) | Limited (need lab equipment) | PPS-Only |
+| Aspect                      | PPS-Only                                   | 10MHz + PPS                     | Winner               |
+| --------------------------- | ------------------------------------------ | ------------------------------- | -------------------- |
+| **Hardware Cost**           | $50-100 (GPS + cables)                     | $500-1500 (GPSDO + splitter)    | PPS-Only             |
+| **Setup Complexity**        | Low (1 SMA cable per device)               | Medium (2 cables + RF splitter) | PPS-Only             |
+| **Time Sync Accuracy**      | ~100 ns (GPS PPS jitter)                   | ~10 ns (locked oscillators)     | 10MHz+PPS            |
+| **Frequency Accuracy**      | 0.01 ppm (after PPS-based cal)             | <0.001 ppm (hardware-locked)    | 10MHz+PPS            |
+| **Phase Coherence**         | Software-corrected (good for stitching)    | Hardware-locked (excellent)     | 10MHz+PPS            |
+| **Sample Rate Match**       | Differs by ±4 ppm                          | Identical                       | 10MHz+PPS            |
+| **Drift Compensation**      | Phase rotation only (low CPU)              | Not needed                      | 10MHz+PPS            |
+| **Coherent Combination**    | Not possible                               | Excellent                       | 10MHz+PPS            |
+| **Adjacent-Band Stitching** | Good (with phase correction)               | Excellent                       | 10MHz+PPS (marginal) |
+| **Non-Coherent Multi-Band** | Excellent (trivial)                        | Excellent (overkill)            | Tie                  |
+| **Software Complexity**     | Moderate (drift tracker + phase corrector) | Low                             | 10MHz+PPS            |
+| **Portability**             | Excellent (GPS works everywhere)           | Limited (need lab equipment)    | PPS-Only             |
 
 ### 9.2 Decision Guide
 
@@ -1734,6 +1784,7 @@ and -40 dBc is acceptable for most monitoring applications.
 ### 10.1 Development Strategy
 
 **Phase 1: Get Streaming Working (Weeks 1-6)**
+
 - Open two B210s as multi_usrp
 - Sync time via PPS using `set_time_unknown_pps()`
 - Stream from both simultaneously with timed start
@@ -1741,6 +1792,7 @@ and -40 dBc is acceptable for most monitoring applications.
 - This phase uses only existing UHD API — no new code needed
 
 **Phase 2: Add Drift Tracking (Weeks 7-10)**
+
 - Implement PPS-based drift estimator
 - Background thread polls PPS timestamps every second
 - Log drift estimates for analysis
@@ -1748,6 +1800,7 @@ and -40 dBc is acceptable for most monitoring applications.
 - ~500 lines of new code
 
 **Phase 3: Implement Phase Correction + Stitching (Weeks 11-14)**
+
 - Phase corrector using Volk rotator
 - FFT-based spectrum stitcher
 - Guard band management
@@ -1755,6 +1808,7 @@ and -40 dBc is acceptable for most monitoring applications.
 - ~1500 lines of new code
 
 **Phase 4: Testing & Hardening (Weeks 15-22)**
+
 - Systematic testing (see Phase 6 above)
 - Long-duration stability tests
 - Overflow recovery testing
@@ -1797,7 +1851,7 @@ tests/
 int main() {
     // 1. Open devices (standard UHD)
     auto usrp = uhd::usrp::multi_usrp::make("serial=ABC123,serial=DEF456");
-    
+
     // 2. Configure PPS sync
     for (size_t mb = 0; mb < usrp->get_num_mboards(); ++mb) {
         usrp->set_clock_source("internal", mb);
@@ -1805,15 +1859,15 @@ int main() {
     }
     usrp->set_time_unknown_pps(uhd::time_spec_t(0.0));
     std::this_thread::sleep_for(std::chrono::seconds(2));
-    
+
     // 3. Create bonded receiver
     double sample_rate = 56e6;
     double center_freq = 2.4e9;         // Center of combined band
     bonded_rx_streamer bonded(usrp, sample_rate, center_freq);
-    
+
     // 4. Start streaming
     bonded.start();
-    
+
     // 5. Receive stitched wideband data
     std::vector<std::complex<float>> buffer(65536);
     uhd::rx_metadata_t md;
@@ -1822,7 +1876,7 @@ int main() {
         // buffer now contains ~90 MHz of stitched spectrum data
         process(buffer.data(), n);
     }
-    
+
     bonded.stop();
     return 0;
 }
@@ -1838,33 +1892,33 @@ int main() {
 
 ### 10.5 Key Design Decisions
 
-| Decision | Choice | Rationale |
-|----------|--------|-----------|
-| Drift estimation method | PPS timestamps (primary) | No RF signals needed, works during normal operation, ~0.01 ppm accuracy |
-| Drift correction method | Phase rotation only (no resampling) | Sample rate offset is negligible for FFT-based stitching |
-| FFT library | FFTW3 | Widely available, heavily optimized, supports in-place transforms |
-| Phase rotation | Volk `rotator_32fc` | SIMD-accelerated, already a UHD dependency |
-| Guard band sizing | 10% of sample rate (analog filter limited) | Drift contribution is negligible (<300 Hz at 56 MS/s) |
-| PPS sync method | `set_time_unknown_pps()` | UHD handles edge detection automatically |
-| Multi-device API | Single `multi_usrp` | UHD already supports this, simpler than managing separate instances |
+| Decision                | Choice                                     | Rationale                                                               |
+| ----------------------- | ------------------------------------------ | ----------------------------------------------------------------------- |
+| Drift estimation method | PPS timestamps (primary)                   | No RF signals needed, works during normal operation, ~0.01 ppm accuracy |
+| Drift correction method | Phase rotation only (no resampling)        | Sample rate offset is negligible for FFT-based stitching                |
+| FFT library             | FFTW3                                      | Widely available, heavily optimized, supports in-place transforms       |
+| Phase rotation          | Volk `rotator_32fc`                        | SIMD-accelerated, already a UHD dependency                              |
+| Guard band sizing       | 10% of sample rate (analog filter limited) | Drift contribution is negligible (<300 Hz at 56 MS/s)                   |
+| PPS sync method         | `set_time_unknown_pps()`                   | UHD handles edge detection automatically                                |
+| Multi-device API        | Single `multi_usrp`                        | UHD already supports this, simpler than managing separate instances     |
 
 ---
 
 ## 11. Timeline and Milestones
 
-| Week | Milestone | Deliverable | Risk |
-|------|-----------|-------------|------|
-| 1-2 | Hardware setup | GPS PPS connected, both B210s responding | Low |
-| 3-4 | PPS time sync | `set_time_unknown_pps()` working, timestamps aligned | Low |
-| 5-6 | Dual streaming | Both devices streaming simultaneously, timed start | Low |
-| 7-8 | PPS drift estimator | Background drift tracking, accuracy verified | Medium |
-| 9-10 | Phase corrector | Volk-based correction working, drift compensated | Medium |
-| 11-12 | FFT stitcher | Spectra stitched, guard bands managed | Medium |
-| 13-14 | Bonded streamer | Complete pipeline: recv → correct → stitch → output | Medium |
-| 15-16 | Integration testing | End-to-end tests passing | Medium |
-| 17-18 | Long-duration tests | 8-hour stability verified | Low |
-| 19-20 | Performance tuning | CPU profiling, buffer sizing optimization | Low |
-| 21-22 | Documentation | User guide, examples, API docs | Low |
+| Week  | Milestone           | Deliverable                                          | Risk   |
+| ----- | ------------------- | ---------------------------------------------------- | ------ |
+| 1-2   | Hardware setup      | GPS PPS connected, both B210s responding             | Low    |
+| 3-4   | PPS time sync       | `set_time_unknown_pps()` working, timestamps aligned | Low    |
+| 5-6   | Dual streaming      | Both devices streaming simultaneously, timed start   | Low    |
+| 7-8   | PPS drift estimator | Background drift tracking, accuracy verified         | Medium |
+| 9-10  | Phase corrector     | Volk-based correction working, drift compensated     | Medium |
+| 11-12 | FFT stitcher        | Spectra stitched, guard bands managed                | Medium |
+| 13-14 | Bonded streamer     | Complete pipeline: recv → correct → stitch → output  | Medium |
+| 15-16 | Integration testing | End-to-end tests passing                             | Medium |
+| 17-18 | Long-duration tests | 8-hour stability verified                            | Low    |
+| 19-20 | Performance tuning  | CPU profiling, buffer sizing optimization            | Low    |
+| 21-22 | Documentation       | User guide, examples, API docs                       | Low    |
 
 **Total: 22 weeks (~5.5 months)**
 
@@ -1906,28 +1960,28 @@ rx_metadata_t.time_spec;                   // Hardware timestamp per packet
 
 ### 12.3 Performance Targets
 
-| Parameter | Target | Notes |
-|-----------|--------|-------|
-| PPS sync accuracy | <1 µs | GPS module dependent (~100 ns typical) |
-| Drift estimation accuracy | <0.02 ppm | After 10 PPS edges |
-| Phase correction CPU | <15% of one core | Volk SIMD at 56 MS/s |
-| FFT stitching CPU | <20% of one core | FFTW3 at 56 MS/s, 4096-point FFT |
-| Total CPU | <50% of one core | Plus overheads |
-| Stitch artifact | <-40 dBc | At band boundary |
-| Usable bandwidth | ~90 MHz | 2× B210 at 56 MS/s, 10% guard bands |
-| Max overflow rate | <1 per hour | With proper USB controller setup |
+| Parameter                 | Target           | Notes                                  |
+| ------------------------- | ---------------- | -------------------------------------- |
+| PPS sync accuracy         | <1 µs            | GPS module dependent (~100 ns typical) |
+| Drift estimation accuracy | <0.02 ppm        | After 10 PPS edges                     |
+| Phase correction CPU      | <15% of one core | Volk SIMD at 56 MS/s                   |
+| FFT stitching CPU         | <20% of one core | FFTW3 at 56 MS/s, 4096-point FFT       |
+| Total CPU                 | <50% of one core | Plus overheads                         |
+| Stitch artifact           | <-40 dBc         | At band boundary                       |
+| Usable bandwidth          | ~90 MHz          | 2× B210 at 56 MS/s, 10% guard bands    |
+| Max overflow rate         | <1 per hour      | With proper USB controller setup       |
 
 ### 12.4 Troubleshooting
 
-| Symptom | Cause | Fix |
-|---------|-------|-----|
-| "No PPS detected" | GPS module not locked, cable disconnected | Check GPS antenna has sky view, verify SMA connections |
-| Large time offset (>1 ms) | PPS signal not reaching one device | Check Y-splitter, try direct connection |
-| Drift estimate unstable | Too few PPS samples | Wait 10+ seconds for convergence |
-| Drift > 10 ppm | Defective TCXO or wrong clock source | Verify `set_clock_source("internal")` was called |
-| Overflow errors | USB bandwidth exceeded | Use separate USB controllers, reduce sample rate |
-| Stitch artifacts | Phase correction not applied | Check drift estimator output, verify Volk install |
-| Poor spectrum edges | Analog filter rolloff | Increase guard band to 12-15% |
+| Symptom                   | Cause                                     | Fix                                                    |
+| ------------------------- | ----------------------------------------- | ------------------------------------------------------ |
+| "No PPS detected"         | GPS module not locked, cable disconnected | Check GPS antenna has sky view, verify SMA connections |
+| Large time offset (>1 ms) | PPS signal not reaching one device        | Check Y-splitter, try direct connection                |
+| Drift estimate unstable   | Too few PPS samples                       | Wait 10+ seconds for convergence                       |
+| Drift > 10 ppm            | Defective TCXO or wrong clock source      | Verify `set_clock_source("internal")` was called       |
+| Overflow errors           | USB bandwidth exceeded                    | Use separate USB controllers, reduce sample rate       |
+| Stitch artifacts          | Phase correction not applied              | Check drift estimator output, verify Volk install      |
+| Poor spectrum edges       | Analog filter rolloff                     | Increase guard band to 12-15%                          |
 
 ---
 
@@ -1935,6 +1989,7 @@ rx_metadata_t.time_spec;                   // Hardware timestamp per packet
 **Last Updated**: March 10, 2026
 **Status**: Ready for Implementation
 **Key Changes from v1.0**:
+
 - Corrected: USB jitter does NOT affect sample alignment (hardware timestamps)
 - Corrected: Cross-correlation only works when devices receive same signal
 - Corrected: Guard bands dominated by analog filter, not oscillator drift
