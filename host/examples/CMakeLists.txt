@@ -29,6 +29,7 @@ set(example_sources
     gpio.cpp
     spi.cpp
     sync_to_gps.cpp
+    sync_validation_test.cpp
     rfnoc_nullsource_ce_rx.cpp
     rfnoc_rx_to_file.cpp
     rfnoc_radio_loopback.cpp
