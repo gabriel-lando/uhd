@@ -36,6 +36,7 @@ set(example_sources
     sync_validation_capture.cpp
     drift_monitor.cpp
     sync_validation_tx.cpp
+    bonded_wideband_rx.cpp
 )
 
 if(ENABLE_OCTOCLOCK)
