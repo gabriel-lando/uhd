@@ -1,13 +1,13 @@
 # Phase 2: Synchronization Capture & Analysis
 
-This directory contains scripts to capture and analyze synchronization between two USRP B210 devices (serials: 30B56D6 and 30DBC3C).
+This directory contains scripts to capture and analyze synchronization between two or more USRP B210 devices.
 
 ## Prerequisites
 
 - Python 3.7+
 - UHD Python bindings (`uhd`)
 - numpy, scipy, matplotlib
-- Two B210s connected via USB
+- Two or more B210s connected via USB
 
 Install dependencies using a virtual environment (required on Ubuntu 24.04+ / Debian 12+ due to PEP 668).
 The `uhd` Python bindings are installed system-wide by the UHD build; grant the venv access to them with `--system-site-packages`:
@@ -32,20 +32,22 @@ source .venv/bin/activate
 ## 1. Capture Synchronized Samples
 
 ```
-capture_sync.py --serials <S0> <S1> [options]
+capture_sync.py --serials <S0> <S1> [S2 ...] [options]
 ```
+
+Supports **2 to 8 devices**. All devices are initialized, synchronized, and captured simultaneously.
 
 ### Key options
 
 | Option               | Default      | Description                                                          |
 | -------------------- | ------------ | -------------------------------------------------------------------- |
-| `--serials`          | _(required)_ | Serial numbers of the two B210s                                      |
+| `--serials`          | _(required)_ | Serial numbers of B210s to use (2–8 devices)                         |
 | `--clock-source`     | `internal`   | `internal` \| `external` \| `gpsdo`                                  |
 | `--time-source`      | `internal`   | `internal` \| `external` \| `gpsdo`                                  |
 | `--rate`             | `1e6`        | Sample rate (Hz)                                                     |
 | `--freq`             | `915e6`      | Center frequency (Hz)                                                |
 | `--gain`             | `30`         | RX gain (dB)                                                         |
-| `--nsamps`           | `1000000`    | Samples to capture per device                                        |
+| `--nsamps`           | `10000000`   | Samples to capture per device                                        |
 | `--timed`            | off          | Force timed start even with internal time source                     |
 | `--ref-lock-timeout` | `10`         | Seconds to wait for external clock lock                              |
 | `--pps-timeout`      | `12`         | Seconds to wait for PPS detection                                    |
@@ -55,7 +57,7 @@ capture_sync.py --serials <S0> <S1> [options]
 
 Timed capture (synchronized start on a PPS edge) is enabled automatically when `--time-source` is `external` or `gpsdo`. Use `--timed` to force it with internal time.
 
-Both devices are armed with the **same absolute start timestamp** before either starts receiving, then both RX streams are drained in parallel threads. This guarantees the two captures begin at the same point in time regardless of USB scheduling latency.
+All devices are armed with the **same absolute start timestamp** before any starts receiving, then all RX streams are drained in parallel threads. This guarantees the captures begin at the same point in time regardless of USB scheduling latency.
 
 ### Built-in CW tone transmitter
 
@@ -63,7 +65,9 @@ Pass `--tx-serial <S>` (where `<S>` is one of `--serials`) to make that device t
 
 - The tone is placed at `--tx-offset` Hz above the center frequency (default **+100 kHz**). A non-zero offset avoids LO self-mixing leakage that appears at DC on every SDR.
 - On a B210, TX uses the **TX/RX** SMA port and RX uses the **RX2** SMA port. Both should have antennas attached.
-- The tone starts before arming the RX streams and stops after both captures complete.
+- The tone starts before arming the RX streams and stops after all captures complete.
+
+> **USB bandwidth note:** each B210 at 1 MHz needs ~8 MB/s. With 3+ devices on the same USB controller you may see occasional overflows, which are handled gracefully. Using ports connected to separate USB controllers (separate PCIe root ports) is recommended for 4+ devices.
 
 ### Sync mode examples
 
@@ -72,7 +76,7 @@ Pass `--tx-serial <S>` (where `<S>` is one of `--serials`) to make that device t
 ```bash
 python3 capture_sync.py \
   --serials 30B56D6 30DBC3C \
-  --rate 1e6 --nsamps 1000000 --freq 915e6 --gain 30
+  --rate 1e6 --nsamps 10000000 --freq 915e6 --gain 30
 ```
 
 **PPS-only** (shared PPS signal, each device uses its own TCXO):
@@ -81,7 +85,7 @@ python3 capture_sync.py \
 python3 capture_sync.py \
   --serials 30B56D6 30DBC3C \
   --time-source external \
-  --rate 1e6 --nsamps 1000000 --freq 915e6 --gain 30
+  --rate 1e6 --nsamps 10000000 --freq 915e6 --gain 30
 ```
 
 **Optimal** (shared 10 MHz reference + shared PPS):
@@ -90,7 +94,17 @@ python3 capture_sync.py \
 python3 capture_sync.py \
   --serials 30B56D6 30DBC3C \
   --clock-source external --time-source external \
-  --rate 1e6 --nsamps 1000000 --freq 915e6 --gain 30
+  --rate 1e6 --nsamps 10000000 --freq 915e6 --gain 30
+```
+
+**Three devices — optimal sync + TX tone:**
+
+```bash
+python3 capture_sync.py \
+  --serials 30B56D6 30DBC3C THIRD_SERIAL \
+  --tx-serial 30B56D6 \
+  --clock-source external --time-source external \
+  --rate 1e6 --nsamps 10000000 --freq 915e6 --gain 30
 ```
 
 **Optimal + built-in TX tone** (recommended for phase coherence measurement):
@@ -109,7 +123,7 @@ python3 capture_sync.py \
 python3 capture_sync.py \
   --serials 30B56D6 30DBC3C \
   --clock-source gpsdo --time-source gpsdo \
-  --rate 1e6 --nsamps 1000000 --freq 915e6 --gain 30
+  --rate 1e6 --nsamps 10000000 --freq 915e6 --gain 30
 ```
 
 The script saves one `.npy` file and one `_meta.txt` file per device, recording the serial, sample rate, frequency, clock source, and time source used.
@@ -119,17 +133,19 @@ The script saves one `.npy` file and one `_meta.txt` file per device, recording 
 ## 2. Analyze Synchronization
 
 ```
-analyze_sync.py --files <file0.npy> <file1.npy> [options]
+analyze_sync.py --files <file0.npy> <file1.npy> [file2.npy ...] [options]
 ```
+
+Device 0 (the first file) is the **reference**. Metrics are computed for every pair `(0, i)`. An odd number of devices is fully supported — you get N-1 independent pairwise results.
 
 ### Key options
 
-| Option          | Default      | Description                                                         |
-| --------------- | ------------ | ------------------------------------------------------------------- |
-| `--files`       | _(required)_ | IQ `.npy` files from `capture_sync.py`                              |
-| `--rate`        | `1e6`        | Sample rate in Hz (auto-read from metadata if available)            |
-| `--tone-offset` | _(off)_      | IF offset (Hz) of the CW TX tone used during capture (e.g. `100e3`) |
-| `--save-plot`   | _(show)_     | Save plot to this file instead of displaying it                     |
+| Option          | Default      | Description                                                                                                                          |
+| --------------- | ------------ | ------------------------------------------------------------------------------------------------------------------------------------ |
+| `--files`       | _(required)_ | IQ `.npy` files from `capture_sync.py` (first file is the reference)                                                                 |
+| `--rate`        | `1e6`        | Sample rate in Hz (auto-read from metadata if available)                                                                             |
+| `--tone-offset` | _(off)_      | IF offset (Hz) of the CW TX tone used during capture (e.g. `100e3`)                                                                  |
+| `--save-plot`   | _(show)_     | Save plot(s) to this file. With multiple pairs the pair index is appended before the extension (e.g. `report_0.png`, `report_1.png`) |
 
 ### When to use `--tone-offset`
 
@@ -144,48 +160,55 @@ Always pass `--tone-offset` when the capture was made with `--tx-serial`. It ena
 ### Example
 
 ```bash
-# No TX tone (analyzes noise correlation only):
+# Two devices, no TX tone:
 python3 analyze_sync.py \
   --files capture_30B56D6.npy capture_30DBC3C.npy
 
-# With TX tone at +100 kHz (recommended):
+# Two devices, with TX tone at +100 kHz (recommended):
 python3 analyze_sync.py \
   --files capture_30B56D6.npy capture_30DBC3C.npy \
+  --tone-offset 100e3 --save-plot report.png
+
+# Three devices (device 0 is reference; two pairwise reports generated):
+python3 analyze_sync.py \
+  --files capture_30B56D6.npy capture_30DBC3C.npy capture_THIRD.npy \
   --tone-offset 100e3
 
-# Save the plot to a file:
+# Save plots to files (produces report_0.png, report_1.png for 3 devices):
 python3 analyze_sync.py \
-  --files capture_30B56D6.npy capture_30DBC3C.npy \
-  --tone-offset 100e3 --save-plot sync_report.png
+  --files capture_30B56D6.npy capture_30DBC3C.npy capture_THIRD.npy \
+  --tone-offset 100e3 --save-plot report.png
 ```
 
 The script reads clock/time source information from the companion `_meta.txt` files automatically and includes them in the printed report.
 
 ### Output
 
-Printed summary:
+Printed summary (two-device example):
 
 ```
 ======================================================
   Synchronization Analysis Report
 ======================================================
-  Device A     : 30B56D6
-  Device B     : 30DBC3C
+  Reference    : 30B56D6
+  Pair 1       : 30DBC3C
   Clock source : external
   Time source  : external
   Sample rate  : 1.000 MHz
-  Tone SNR (A) : +47.3 dB
-  Tone SNR (B) : +57.2 dB
 ------------------------------------------------------
+  [ Pair 0: 30B56D6 → 30DBC3C ]
+  Tone SNR (ref)  : +47.3 dB
+  Tone SNR (dev)  : +57.2 dB
   Time offset     : +0.088 samples  (+0.088 µs)
   Freq offset     : +0.000 Hz
   Phase coherence : 0.311 rad (stddev)
-------------------------------------------------------
   Time sync       : GOOD  (threshold <10 µs)
   Freq sync       : GOOD  (threshold <10 Hz)
   Phase coherence : GOOD  (threshold <0.5 rad)
 ======================================================
 ```
+
+With three devices a second `[ Pair 1: 30B56D6 → THIRD_SERIAL ]` block follows, then the final separator.
 
 Three plots:
 

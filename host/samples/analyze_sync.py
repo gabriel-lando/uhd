@@ -1,14 +1,23 @@
 #!/usr/bin/env python3
 """
-Analyze synchronization between two IQ captures produced by capture_sync.py.
+Analyze synchronization between IQ captures produced by capture_sync.py.
 
-Metrics computed:
-  - Time offset    — windowed cross-correlation with sub-sample interpolation
+Usage:
+  analyze_sync.py --files <file0.npy> <file1.npy> [file2.npy ...] [options]
+
+Device 0 (first file) is the reference. Metrics are computed pairwise for
+each (device 0, device i) combination — odd numbers of devices are fine.
+One plot is generated per pair; when saving with --save-plot the pair index
+is appended before the extension (e.g. report_0.png, report_1.png).
+
+Metrics computed per pair:
+  - Time offset      — Hann-windowed cross-correlation with sub-sample interpolation
   - Frequency offset — least-squares fit to the unwrapped inter-device phase
   - Phase coherence  — stddev of phase residuals after removing the linear trend
 
-When --tone-offset is supplied, segmented-FFT analysis is used instead of
-per-sample phase estimation, which is required when per-sample SNR is negative.
+When --tone-offset is supplied, segmented-FFT analysis is used (50 ms segments)
+instead of per-sample phase estimation; this is required when the per-sample SNR
+is negative, as is typical for wideband RX captures without a strong CW tone.
 """
 import argparse
 import os
@@ -19,20 +28,25 @@ from scipy.signal import correlate, windows, firwin, lfilter
 
 def parse_args():
     p = argparse.ArgumentParser(
-        description="Analyze sync between two IQ captures.",
+        description="Analyze sync between IQ captures (device 0 is the reference).",
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
-    p.add_argument('--files', nargs=2, required=True,
-                   help='IQ .npy files from capture_sync.py')
+    p.add_argument('--files', nargs='+', required=True,
+                   help='IQ .npy files from capture_sync.py (minimum 2; '
+                        'first file is the reference device)')
     p.add_argument('--rate', type=float, default=1e6,
                    help='Sample rate in Hz; overridden by metadata if available')
     p.add_argument('--save-plot', metavar='FILE',
-                   help='Save plot to FILE instead of displaying interactively')
+                   help='Save plot to FILE instead of displaying interactively. '
+                        'With multiple pairs the pair index is appended before the extension.')
     p.add_argument('--tone-offset', type=float, default=None, metavar='HZ',
                    help='IF offset (Hz) of the TX tone used during capture '
                         '(e.g. 100e3). Enables segmented-FFT phase analysis and '
                         'resolves the cross-correlation period ambiguity.')
-    return p.parse_args()
+    args = p.parse_args()
+    if len(args.files) < 2:
+        p.error('--files requires at least 2 .npy files')
+    return args
 
 
 def load_meta(npy_path):
@@ -165,14 +179,23 @@ def estimate_freq_offset_tone(x, y, rate, tone_offset, seg_dur=0.05):
     return freq_offset, seg_phases, seg_phases_unwrapped, phase_residuals, seg_times
 
 
+def _save_path_for_pair(save_path, pair_idx, n_pairs):
+    """Insert pair index into save_path when there are multiple pairs."""
+    if save_path is None or n_pairs == 1:
+        return save_path
+    root, ext = os.path.splitext(save_path)
+    return f"{root}_{pair_idx}{ext}"
+
+
 def plot_results(xc, lag, offset, phase_diff, phase_unwrapped, phase_residuals,
-                 freq_offset, rate, seg_times=None, save_path=None):
+                 freq_offset, rate, label_ref, label_dev,
+                 seg_times=None, save_path=None):
     fig, axes = plt.subplots(3, 1, figsize=(12, 9))
 
     axes[0].plot(lag, np.abs(xc))
     axes[0].set_title(
-        f'Cross-correlation  |  peak lag = {offset:.3f} samples  '
-        f'({offset / rate * 1e6:.3f} µs)')
+        f'[{label_ref} → {label_dev}]  Cross-correlation  |  '
+        f'peak lag = {offset:.3f} samples  ({offset / rate * 1e6:.3f} µs)')
     axes[0].set_xlabel('Lag (samples)')
     axes[0].set_ylabel('Correlation magnitude')
     axes[0].grid(True)
@@ -216,86 +239,119 @@ def plot_results(xc, lag, offset, phase_diff, phase_unwrapped, phase_residuals,
         plt.show()
 
 
-def main():
-    args = parse_args()
-    x = np.load(args.files[0])
-    y = np.load(args.files[1])
-    meta0 = load_meta(args.files[0])
-    meta1 = load_meta(args.files[1])
+def _analyze_pair(x, y, rate, tone_offset):
+    """Run all analysis on one (reference, device) pair.
 
-    # Use sample rate from metadata if both files agree (and CLI was not overridden)
-    if meta0.get('rate') and meta1.get('rate'):
-        r0, r1 = float(meta0['rate']), float(meta1['rate'])
-        if r0 == r1:
-            args.rate = r0
-
+    Returns a dict with keys: offset, xc, lag, freq_offset, phase_diff,
+    phase_unwrapped, phase_residuals, seg_times, snr_ref, snr_dev, low_snr.
+    """
     offset, xc, lag = cross_correlation(x, y)
-    # Resolve the period ambiguity when a CW tone was used.
-    if args.tone_offset is not None:
-        offset = resolve_tone_lag(offset, args.rate, args.tone_offset)
+    if tone_offset is not None:
+        offset = resolve_tone_lag(offset, rate, tone_offset)
 
-    snr_a, snr_b = None, None
+    snr_ref, snr_dev = None, None
     seg_times = None
-    if args.tone_offset is not None:
-        snr_a, _, _ = estimate_tone_snr(x, args.rate, args.tone_offset)
-        snr_b, _, _ = estimate_tone_snr(y, args.rate, args.tone_offset)
+    if tone_offset is not None:
+        snr_ref, _, _ = estimate_tone_snr(x, rate, tone_offset)
+        snr_dev, _, _ = estimate_tone_snr(y, rate, tone_offset)
         (freq_offset, phase_diff, phase_unwrapped,
          phase_residuals, seg_times) = estimate_freq_offset_tone(
-            x, y, args.rate, args.tone_offset)
+            x, y, rate, tone_offset)
     else:
         freq_offset, phase_diff, phase_unwrapped, phase_residuals = \
-            estimate_freq_offset(x, y, args.rate)
-    phase_coherence_std = float(np.std(phase_residuals))
-    low_snr = snr_a is not None and (snr_a < 10 or snr_b < 10)
+            estimate_freq_offset(x, y, rate)
 
-    # --- Summary report ---
-    print("=" * 54)
+    return dict(
+        offset=offset, xc=xc, lag=lag,
+        freq_offset=freq_offset,
+        phase_diff=phase_diff,
+        phase_unwrapped=phase_unwrapped,
+        phase_residuals=phase_residuals,
+        seg_times=seg_times,
+        snr_ref=snr_ref, snr_dev=snr_dev,
+        low_snr=(snr_ref is not None and (snr_ref < 10 or snr_dev < 10)),
+    )
+
+
+def main():
+    args = parse_args()
+    files = args.files
+    n_pairs = len(files) - 1
+
+    # Load all captures and metadata
+    sigs  = [np.load(f) for f in files]
+    metas = [load_meta(f) for f in files]
+
+    # Resolve sample rate from metadata (use first file's value if consistent)
+    for m in metas:
+        if m.get('rate'):
+            args.rate = float(m['rate'])
+            break
+
+    ref_serial  = metas[0].get('serial', files[0])
+    clock_src   = metas[0].get('clock_source', 'unknown')
+    time_src    = metas[0].get('time_source',  'unknown')
+
+    # Header
+    print("=" * 62)
     print("  Synchronization Analysis Report")
-    print("=" * 54)
-    if meta0:
-        print(f"  Device A     : {meta0.get('serial', args.files[0])}")
-        print(f"  Device B     : {meta1.get('serial', args.files[1])}")
-        print(f"  Clock source : {meta0.get('clock_source', 'unknown')}")
-        print(f"  Time source  : {meta0.get('time_source', 'unknown')}")
+    print("=" * 62)
+    print(f"  Reference    : {ref_serial}")
+    print(f"  Clock source : {clock_src}")
+    print(f"  Time source  : {time_src}")
     print(f"  Sample rate  : {args.rate / 1e6:.3f} MHz")
-    if snr_a is not None:
-        print(f"  Tone SNR (A) : {snr_a:+.1f} dB")
-        print(f"  Tone SNR (B) : {snr_b:+.1f} dB")
-        if low_snr:
-            print(f"  WARNING: SNR < 10 dB — freq/phase metrics unreliable.")
-            print(f"           Move devices closer, increase TX gain, or add attenuation.")
-    print("-" * 54)
-    time_offset_us = offset / args.rate * 1e6
-    print(f"  Time offset     : {offset:+.3f} samples  ({time_offset_us:+.3f} µs)")
-    print(f"  Freq offset     : {freq_offset:+.3f} Hz")
-    print(f"  Phase coherence : {phase_coherence_std:.3f} rad (stddev)")
-    print("-" * 54)
+    print(f"  Pairs        : {n_pairs} (each vs. reference)")
 
-    verdict_time  = "GOOD" if abs(time_offset_us) < 10 else "POOR"
-    verdict_freq  = "N/A (low SNR)" if low_snr else ("GOOD" if abs(freq_offset) < 10 else "POOR")
-    verdict_phase = "N/A (low SNR)" if low_snr else ("GOOD" if phase_coherence_std < 0.5 else "POOR")
-    print(f"  Time sync       : {verdict_time}  (threshold <10 µs)")
-    print(f"  Freq sync       : {verdict_freq}  (threshold <10 Hz)")
-    print(f"  Phase coherence : {verdict_phase}  (threshold <0.5 rad)")
+    pair_results = []
+    for i in range(1, len(files)):
+        dev_serial = metas[i].get('serial', files[i])
+        r = _analyze_pair(sigs[0], sigs[i], args.rate, args.tone_offset)
+        r['ref_serial'] = ref_serial
+        r['dev_serial'] = dev_serial
+        pair_results.append(r)
 
-    clock_src = meta0.get('clock_source', 'unknown')
-    time_src  = meta0.get('time_source', 'unknown')
-    if verdict_time == "POOR" or verdict_freq == "POOR":
-        if clock_src == 'internal' and time_src == 'internal':
-            print("\n  HINT: Both devices used internal clocks with no external sync.")
-            print("  Add a PPS signal and capture with --time-source external to improve")
-            print("  time alignment. Add a shared 10 MHz reference and use")
-            print("  --clock-source external to eliminate frequency offset.")
-        elif clock_src == 'internal' and time_src in ('external', 'gpsdo'):
-            print("\n  HINT: PPS-only mode — time alignment should be good but a frequency")
-            print("  offset is expected because each device runs its own TCXO.")
-            print("  Add a shared 10 MHz reference and use --clock-source external")
-            print("  to reduce frequency offset.")
-    print("=" * 54)
+        phase_coherence_std = float(np.std(r['phase_residuals']))
+        time_offset_us = r['offset'] / args.rate * 1e6
 
-    plot_results(xc, lag, offset, phase_diff, phase_unwrapped, phase_residuals,
-                 freq_offset, args.rate, seg_times=seg_times,
-                 save_path=args.save_plot)
+        print("-" * 62)
+        print(f"  Pair         : {ref_serial} → {dev_serial}")
+        if r['snr_ref'] is not None:
+            print(f"  Tone SNR (ref) : {r['snr_ref']:+.1f} dB")
+            print(f"  Tone SNR (dev) : {r['snr_dev']:+.1f} dB")
+            if r['low_snr']:
+                print("  WARNING: SNR < 10 dB — freq/phase metrics unreliable.")
+        print(f"  Time offset     : {r['offset']:+.3f} samples  ({time_offset_us:+.3f} µs)")
+        print(f"  Freq offset     : {r['freq_offset']:+.3f} Hz")
+        print(f"  Phase coherence : {phase_coherence_std:.3f} rad (stddev)")
+
+        verdict_time  = "GOOD" if abs(time_offset_us) < 10 else "POOR"
+        verdict_freq  = "N/A (low SNR)" if r['low_snr'] else ("GOOD" if abs(r['freq_offset']) < 10 else "POOR")
+        verdict_phase = "N/A (low SNR)" if r['low_snr'] else ("GOOD" if phase_coherence_std < 0.5 else "POOR")
+        print(f"  Time sync       : {verdict_time}  (threshold <10 µs)")
+        print(f"  Freq sync       : {verdict_freq}  (threshold <10 Hz)")
+        print(f"  Phase coherence : {verdict_phase}  (threshold <0.5 rad)")
+
+        if verdict_time == "POOR" or verdict_freq == "POOR":
+            if clock_src == 'internal' and time_src == 'internal':
+                print("\n  HINT: No external sync. Use --time-source external + shared PPS for")
+                print("  time alignment; add --clock-source external to eliminate freq offset.")
+            elif clock_src == 'internal' and time_src in ('external', 'gpsdo'):
+                print("\n  HINT: PPS-only — freq offset expected (independent TCXOs).")
+                print("  Add --clock-source external with a shared 10 MHz reference.")
+
+    print("=" * 62)
+
+    # Plots — one figure per pair
+    for i, r in enumerate(pair_results):
+        phase_coherence_std = float(np.std(r['phase_residuals']))
+        sp = _save_path_for_pair(args.save_plot, i, n_pairs)
+        plot_results(
+            r['xc'], r['lag'], r['offset'],
+            r['phase_diff'], r['phase_unwrapped'], r['phase_residuals'],
+            r['freq_offset'], args.rate,
+            label_ref=r['ref_serial'], label_dev=r['dev_serial'],
+            seg_times=r['seg_times'], save_path=sp,
+        )
 
 
 if __name__ == '__main__':

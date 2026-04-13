@@ -1,14 +1,18 @@
 #!/usr/bin/env python3
 """
-Capture time-aligned IQ samples from two USRP B210s.
+Capture time-aligned IQ samples from two to eight USRP B210s.
 
-Timed capture (synchronized start on a shared PPS edge) is enabled
-automatically when --time-source is external or gpsdo.
-Both RX streams are armed with the same absolute timestamp and drained
-in parallel threads to avoid USB scheduling skew.
+Usage:
+  capture_sync.py --serials <S0> <S1> [S2 ...] [options]
+
+All RX streams are armed with the same absolute timestamp and drained in
+parallel threads to avoid USB scheduling skew. Timed capture (synchronized
+start on a shared PPS edge) is enabled automatically when --time-source is
+'external' or 'gpsdo'; use --timed to force it with internal time.
 
 Optionally, one device can transmit a CW tone during capture (--tx-serial)
 to provide a coherent reference signal for phase/frequency analysis.
+Output: one capture_<serial>.npy and capture_<serial>_meta.txt per device.
 """
 import argparse
 import numpy as np
@@ -20,19 +24,19 @@ import threading
 
 def parse_args():
     p = argparse.ArgumentParser(
-        description="Capture synchronized samples from two B210s.",
+        description="Capture synchronized IQ samples from 2-8 USRP B210s.",
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
-    p.add_argument('--serials', nargs=2, required=True,
-                   help='Serial numbers of the two B210s')
+    p.add_argument('--serials', nargs='+', required=True,
+                   help='Serial numbers of the B210s (minimum 2, maximum 8)')
     p.add_argument('--rate', type=float, default=1e6,
                    help='Sample rate in Hz (default: 1e6)')
     p.add_argument('--freq', type=float, default=915e6,
                    help='Center frequency in Hz (default: 915e6)')
     p.add_argument('--gain', type=float, default=30,
                    help='RX gain in dB (default: 30)')
-    p.add_argument('--nsamps', type=int, default=1_000_000,
-                   help='Samples to capture per device (default: 1000000)')
+    p.add_argument('--nsamps', type=int, default=10_000_000,
+                   help='Samples to capture per device (default: 10000000)')
     p.add_argument('--clock-source', default='internal',
                    choices=('internal', 'external', 'gpsdo'),
                    help='Clock reference for both devices (default: internal)')
@@ -52,7 +56,12 @@ def parse_args():
                    help='TX gain in dB (default: 60)')
     p.add_argument('--tx-offset', type=float, default=100e3,
                    help='Tone IF offset from center in Hz (default: 100e3)')
-    return p.parse_args()
+    args = p.parse_args()
+    if len(args.serials) < 2:
+        p.error('--serials requires at least 2 serial numbers')
+    if len(args.serials) > 8:
+        p.error('--serials accepts at most 8 serial numbers')
+    return args
 
 
 def setup_usrp(serial, rate, freq, gain, clock_source, time_source):
@@ -251,44 +260,44 @@ def save_data(serial, samps, md, rate, freq, gain, clock_source, time_source):
 
 def main():
     args = parse_args()
-    serial0, serial1 = args.serials
+    serials = args.serials
     uses_pps = args.time_source in ('external', 'gpsdo')
     use_timed = uses_pps or args.timed
 
+    print(f"Devices      : {', '.join(serials)}")
     print(f"Clock source : {args.clock_source}")
     print(f"Time source  : {args.time_source}")
     print(f"Timed capture: {use_timed}")
     print()
 
-    if args.tx_serial is not None and args.tx_serial not in args.serials:
-        print(f"ERROR: --tx-serial {args.tx_serial!r} is not in --serials {args.serials}.")
+    if args.tx_serial is not None and args.tx_serial not in serials:
+        print(f"ERROR: --tx-serial {args.tx_serial!r} is not in --serials {serials}.")
         sys.exit(1)
 
-    usrp0 = setup_usrp(serial0, args.rate, args.freq, args.gain,
+    usrps = [setup_usrp(s, args.rate, args.freq, args.gain,
                         args.clock_source, args.time_source)
-    usrp1 = setup_usrp(serial1, args.rate, args.freq, args.gain,
-                        args.clock_source, args.time_source)
+             for s in serials]
 
     if args.clock_source in ('external', 'gpsdo'):
-        ok0 = wait_for_ref_lock(usrp0, serial0, args.ref_lock_timeout)
-        ok1 = wait_for_ref_lock(usrp1, serial1, args.ref_lock_timeout)
-        if not (ok0 and ok1):
-            print("External clock lock failed on one or both devices. Aborting.")
+        locks = [wait_for_ref_lock(u, s, args.ref_lock_timeout)
+                 for u, s in zip(usrps, serials)]
+        if not all(locks):
+            print("External clock lock failed on one or more devices. Aborting.")
             sys.exit(1)
 
     if uses_pps:
-        ok0 = wait_for_pps(usrp0, serial0, args.pps_timeout)
-        ok1 = wait_for_pps(usrp1, serial1, args.pps_timeout)
-        if not (ok0 and ok1):
-            print("PPS detection failed on one or both devices. Aborting.")
+        pps_ok = [wait_for_pps(u, s, args.pps_timeout)
+                  for u, s in zip(usrps, serials)]
+        if not all(pps_ok):
+            print("PPS detection failed on one or more devices. Aborting.")
             sys.exit(1)
-        if not synchronize_time([usrp0, usrp1], [serial0, serial1]):
+        if not synchronize_time(usrps, serials):
             print("Time synchronization failed. Aborting.")
             sys.exit(1)
 
     # Shared start timestamp derived from the common PPS timeline.
     if use_timed:
-        start_time = usrp0.get_time_last_pps() + uhd.types.TimeSpec(5.0)
+        start_time = usrps[0].get_time_last_pps() + uhd.types.TimeSpec(5.0)
     else:
         start_time = None
 
@@ -296,39 +305,38 @@ def main():
     tx_stop = None
     tx_thread = None
     if args.tx_serial is not None:
-        tx_usrp = usrp0 if args.tx_serial == serial0 else usrp1
+        tx_idx = serials.index(args.tx_serial)
         tx_stop = threading.Event()
-        tx_thread = start_tx_tone(tx_usrp, args.tx_serial,
+        tx_thread = start_tx_tone(usrps[tx_idx], args.tx_serial,
                                   args.freq, args.rate, args.tx_gain,
                                   args.tx_offset, tx_stop)
-        time.sleep(0.1)  # brief settling time before arming RX
+        time.sleep(0.1)
 
-    # Arm both devices with the same timestamp, then drain in parallel.
-    stream0 = arm_capture(usrp0, serial0, args.nsamps, start_time)
-    stream1 = arm_capture(usrp1, serial1, args.nsamps, start_time)
+    # Arm all devices with the same timestamp, then drain in parallel.
+    streams = [arm_capture(u, s, args.nsamps, start_time)
+               for u, s in zip(usrps, serials)]
 
-    results = [None, None]
+    results = [None] * len(serials)
 
     def _recv(idx, stream, serial):
         results[idx] = recv_capture(stream, serial, args.nsamps)
 
-    t0 = threading.Thread(target=_recv, args=(0, stream0, serial0), daemon=True)
-    t1 = threading.Thread(target=_recv, args=(1, stream1, serial1), daemon=True)
-    t0.start(); t1.start()
-    t0.join(); t1.join()
+    threads = [threading.Thread(target=_recv, args=(i, streams[i], serials[i]),
+                                daemon=True)
+               for i in range(len(serials))]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
 
-    samps0, md0 = results[0]
-    samps1, md1 = results[1]
-
-    # Stop the TX tone now that both captures are done
     if tx_stop is not None:
         tx_stop.set()
         tx_thread.join(timeout=2.0)
 
-    save_data(serial0, samps0, md0, args.rate, args.freq, args.gain,
-              args.clock_source, args.time_source)
-    save_data(serial1, samps1, md1, args.rate, args.freq, args.gain,
-              args.clock_source, args.time_source)
+    for i, serial in enumerate(serials):
+        samps, md = results[i]
+        save_data(serial, samps, md, args.rate, args.freq, args.gain,
+                  args.clock_source, args.time_source)
 
     print("\nCapture complete.")
 
