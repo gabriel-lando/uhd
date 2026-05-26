@@ -11,6 +11,7 @@
 set(example_sources
     benchmark_rate.cpp
     bonded_usrp_rx.cpp
+    bonded_usrp_continuous.cpp
     rx_multi_samples.cpp
     rx_samples_to_file.cpp
     rx_samples_to_udp.cpp

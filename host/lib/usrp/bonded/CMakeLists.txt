@@ -9,4 +9,5 @@
 
 LIBUHD_APPEND_SOURCES(
     ${CMAKE_CURRENT_SOURCE_DIR}/bonded_usrp.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/bonded_receiver.cpp
 )
