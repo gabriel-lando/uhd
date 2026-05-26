@@ -181,7 +181,3 @@ If the external 10 MHz reference is not locked the program throws and exits imme
 
 - If both devices pass all checks, proceed to **Phase 2**: capture simultaneous IQ snapshots with `samples/capture_sync.py` and quantify time/frequency offset with `samples/analyze_sync.py`.
 - If either device fails, resolve the cabling or hardware issue before proceeding.
-
----
-
-Documented by: Phase 1 checklist for B210 serials 30B56D6 and 30DBC3C

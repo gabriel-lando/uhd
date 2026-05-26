@@ -22,6 +22,7 @@
 #include <uhdlib/rfnoc/rfnoc_device.hpp>
 #include <uhdlib/usrp/gpio_defs.hpp>
 #include <uhdlib/usrp/multi_usrp_utils.hpp>
+#include "bonded/bonded_usrp.hpp"
 #include <boost/algorithm/string.hpp>
 #include <boost/format.hpp>
 #include <algorithm>
@@ -2769,11 +2770,33 @@ multi_usrp::sptr multi_usrp::make(const device_addr_t& dev_addr)
     UHD_LOGGER_TRACE("MULTI_USRP")
         << "multi_usrp::make with args " << dev_addr.to_pp_string();
 
-    device::sptr dev = device::make(dev_addr, device::USRP);
+    // When bonded=true with indexed serial keys (serial0=, serial1=, ...),
+    // device::make only understands the plain "serial" filter key.
+    // Extract serial0 so that we open the intended primary device rather than
+    // whichever USB device happens to enumerate first.
+    device_addr_t open_addr = dev_addr;
+    if (dev_addr.has_key("bonded") && dev_addr["bonded"] != "false"
+        && dev_addr.has_key("serial0") && !dev_addr.has_key("serial")) {
+        open_addr["serial"] = dev_addr["serial0"];
+    }
+
+    device::sptr dev = device::make(open_addr, device::USRP);
 
     auto rfnoc_dev = std::dynamic_pointer_cast<rfnoc::detail::rfnoc_device>(dev);
+    multi_usrp::sptr usrp;
     if (rfnoc_dev) {
-        return rfnoc::detail::make_rfnoc_device(rfnoc_dev, dev_addr);
+        usrp = rfnoc::detail::make_rfnoc_device(rfnoc_dev, dev_addr);
+    } else {
+        usrp = std::make_shared<multi_usrp_impl>(dev);
     }
-    return std::make_shared<multi_usrp_impl>(dev);
+
+    // If the user requested bonded multi-device sync, apply it now.
+    // NOTE: for multiple physical USB devices, the caller must create separate
+    // multi_usrp instances (one per serialN key) and use
+    // bonded::setup_multi_device_sync() on the full vector.
+    if (dev_addr.has_key("bonded") && dev_addr["bonded"] != "false") {
+        uhd::usrp::bonded::setup_bonded_sync(usrp, dev_addr);
+    }
+
+    return usrp;
 }
