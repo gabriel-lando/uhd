@@ -5,6 +5,7 @@
 
 #include "bonded_receiver.hpp"
 
+#include <uhdlib/usrp/bonded/bonded_alignment.hpp>
 #include <uhd/exception.hpp>
 #include <uhd/types/tune_request.hpp>
 #include <uhd/utils/thread.hpp>
@@ -154,25 +155,11 @@ bonded_receiver::rx_result bonded_receiver::capture_burst(
         t.join();
     }
 
-    // Compute alignment
-    std::vector<double> valid_ts;
-    for (size_t d = 0; d < num_dev; d++) {
-        if (result.success[d] && result.first_timestamps[d] >= 0.0) {
-            valid_ts.push_back(result.first_timestamps[d]);
-        }
-    }
-
-    if (valid_ts.size() == num_dev && num_dev > 1) {
-        const double ts_min = *std::min_element(valid_ts.begin(), valid_ts.end());
-        const double ts_max = *std::max_element(valid_ts.begin(), valid_ts.end());
-        result.inter_device_spread_us = (ts_max - ts_min) * 1e6;
-        result.aligned = (ts_max - ts_min) <= ALIGN_THRESHOLD_SECS;
-    } else if (valid_ts.size() == num_dev && num_dev == 1) {
-        result.aligned = true;
-    } else {
-        result.aligned       = false;
-        result.error_message = "One or more devices did not receive data";
-    }
+    const auto align = detail::evaluate_burst_alignment(
+        result.first_timestamps, result.success, ALIGN_THRESHOLD_SECS);
+    result.inter_device_spread_us = align.inter_device_spread_us;
+    result.aligned                = align.aligned;
+    result.error_message          = align.error_message;
 
     return result;
 }
@@ -194,6 +181,12 @@ void bonded_receiver::start_continuous()
     _stop_flag = false;
     _ring_buffers.resize(num_dev);
     _ring_mutexes = std::vector<std::mutex>(num_dev);
+    _overflow_counts = std::vector<std::atomic<size_t>>(num_dev);
+    _zero_fill_counts = std::vector<std::atomic<size_t>>(num_dev);
+    for (size_t d = 0; d < num_dev; d++) {
+        _overflow_counts[d].store(0);
+        _zero_fill_counts[d].store(0);
+    }
 
     // Issue a common timed continuous stream command to all devices.
     // Using stream_now=true may fail for multi-channel streamers on some
@@ -212,6 +205,26 @@ void bonded_receiver::start_continuous()
     for (size_t d = 0; d < num_dev; d++) {
         _recv_threads.emplace_back(&bonded_receiver::_recv_loop, this, d);
     }
+
+    // Prime ring buffers so the first get_aligned_samples() calls don't hit
+    // startup transients while threads are still filling initial chunks.
+    const auto prime_deadline =
+        std::chrono::steady_clock::now() + std::chrono::milliseconds(500);
+    while (std::chrono::steady_clock::now() < prime_deadline) {
+        bool all_have_data = true;
+        for (size_t d = 0; d < num_dev; d++) {
+            std::lock_guard<std::mutex> lock(_ring_mutexes[d]);
+            if (_ring_buffers[d].empty()) {
+                all_have_data = false;
+                break;
+            }
+        }
+        if (all_have_data) {
+            break;
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+
     _streaming = true;
 }
 
@@ -238,11 +251,7 @@ bonded_receiver::rx_result bonded_receiver::get_aligned_samples(
         bool all_ready = true;
         for (size_t d = 0; d < num_dev; d++) {
             std::lock_guard<std::mutex> lock(_ring_mutexes[d]);
-            size_t available = 0;
-            for (const auto& c : _ring_buffers[d]) {
-                available += c.num_samples;
-            }
-            if (available < nsamps) {
+            if (detail::samples_available(_ring_buffers[d]) < nsamps) {
                 all_ready = false;
                 break;
             }
@@ -251,109 +260,29 @@ bonded_receiver::rx_result bonded_receiver::get_aligned_samples(
         std::this_thread::sleep_for(std::chrono::milliseconds(1));
     }
 
-    // Find the alignment point: latest first-chunk timestamp across all devices
     double align_ts = -1.0;
-    for (size_t d = 0; d < num_dev; d++) {
-        std::lock_guard<std::mutex> lock(_ring_mutexes[d]);
-        if (_ring_buffers[d].empty()) {
-            result.error_message = "Device " + std::to_string(d) + " has no data";
-            return result;
+    {
+        std::vector<std::deque<chunk>> snapshot(num_dev);
+        for (size_t d = 0; d < num_dev; d++) {
+            std::lock_guard<std::mutex> lock(_ring_mutexes[d]);
+            snapshot[d] = _ring_buffers[d];
         }
-        double first_ts = _ring_buffers[d].front().timestamp;
-        if (first_ts > align_ts) {
-            align_ts = first_ts;
+        if (!detail::find_alignment_timestamp(snapshot, align_ts, result.error_message)) {
+            return result;
         }
     }
 
-    // Extract nsamps from each device starting at or after align_ts
     for (size_t d = 0; d < num_dev; d++) {
         std::lock_guard<std::mutex> lock(_ring_mutexes[d]);
         auto& ring = _ring_buffers[d];
 
-        // Discard chunks older than alignment point
-        while (!ring.empty()) {
-            auto& front = ring.front();
-            double chunk_end_ts =
-                front.timestamp
-                + static_cast<double>(front.num_samples) / _config.rate;
-            if (chunk_end_ts <= align_ts) {
-                ring.pop_front();
-            } else {
-                break;
-            }
-        }
+        const auto extract = detail::extract_aligned_samples(
+            ring, nsamps, _channels_per_device, _config.rate, align_ts, result.data[d]);
 
-        if (ring.empty()) {
-            const size_t nch = _channels_per_device;
-            result.data[d].resize(nch);
-            for (size_t c = 0; c < nch; c++) {
-                result.data[d][c].assign(nsamps, std::complex<float>(0.0f, 0.0f));
-            }
-            result.first_timestamps[d] = align_ts;
-            result.success[d]          = false;
-            degraded                   = true;
-            continue;
-        }
-
-        // Collect nsamps
-        const size_t nch = _channels_per_device;
-        result.data[d].resize(nch);
-        for (size_t c = 0; c < nch; c++) {
-            result.data[d][c].reserve(nsamps);
-        }
-
-        size_t collected = 0;
-        bool first       = true;
-        while (collected < nsamps && !ring.empty()) {
-            auto& front      = ring.front();
-            size_t skip      = 0;
-
-            // For the first chunk, skip samples before align_ts
-            if (first) {
-                double offset_secs = align_ts - front.timestamp;
-                if (offset_secs > 0) {
-                    skip = static_cast<size_t>(offset_secs * _config.rate);
-                    if (skip >= front.num_samples) {
-                        ring.pop_front();
-                        continue;
-                    }
-                }
-                result.first_timestamps[d] = align_ts;
-                first = false;
-            }
-
-            size_t avail = front.num_samples - skip;
-            size_t to_copy = std::min(avail, nsamps - collected);
-
-            for (size_t c = 0; c < nch; c++) {
-                result.data[d][c].insert(result.data[d][c].end(),
-                    front.data[c].begin() + skip,
-                    front.data[c].begin() + skip + to_copy);
-            }
-            collected += to_copy;
-
-            if (skip + to_copy >= front.num_samples) {
-                ring.pop_front();
-            } else {
-                // Partial consumption: trim the front chunk
-                for (size_t c = 0; c < nch; c++) {
-                    front.data[c].erase(
-                        front.data[c].begin(), front.data[c].begin() + skip + to_copy);
-                }
-                front.timestamp +=
-                    static_cast<double>(skip + to_copy) / _config.rate;
-                front.num_samples -= (skip + to_copy);
-            }
-        }
-
-        result.success[d] = (collected >= nsamps);
-        if (!result.success[d]) {
-            for (size_t c = 0; c < nch; c++) {
-                result.data[d][c].resize(nsamps, std::complex<float>(0.0f, 0.0f));
-            }
-            if (result.first_timestamps[d] < 0.0) {
-                result.first_timestamps[d] = align_ts;
-            }
+        result.first_timestamps[d] = extract.first_timestamp;
+        result.success[d]          = extract.success;
+        if (extract.zero_filled) {
+            _zero_fill_counts[d].fetch_add(1);
             degraded = true;
         }
     }
@@ -378,6 +307,24 @@ bonded_receiver::rx_result bonded_receiver::get_aligned_samples(
     }
 
     return result;
+}
+
+std::vector<size_t> bonded_receiver::get_overflow_counts() const
+{
+    std::vector<size_t> counts(_overflow_counts.size(), 0);
+    for (size_t d = 0; d < _overflow_counts.size(); d++) {
+        counts[d] = _overflow_counts[d].load();
+    }
+    return counts;
+}
+
+std::vector<size_t> bonded_receiver::get_zero_fill_counts() const
+{
+    std::vector<size_t> counts(_zero_fill_counts.size(), 0);
+    for (size_t d = 0; d < _zero_fill_counts.size(); d++) {
+        counts[d] = _zero_fill_counts[d].load();
+    }
+    return counts;
 }
 
 void bonded_receiver::stop()
@@ -480,21 +427,29 @@ void bonded_receiver::_apply_sync()
 
 void bonded_receiver::_configure_hardware()
 {
+    const bool use_freq_plan = !_config.freq_plan.empty();
+    if (use_freq_plan && _config.freq_plan.size() != _devices.size()) {
+        throw uhd::runtime_error(
+            "bonded_receiver: freq_plan size must match number of devices");
+    }
+
     for (size_t d = 0; d < _devices.size(); d++) {
         auto& usrp = _devices[d];
         if (!_config.subdev.empty()) {
             usrp->set_rx_subdev_spec(_config.subdev);
         }
         usrp->set_rx_rate(_config.rate);
+        const double dev_freq = use_freq_plan ? _config.freq_plan[d] : _config.freq;
         const size_t nch = usrp->get_rx_num_channels();
         for (size_t ch = 0; ch < nch; ch++) {
-            usrp->set_rx_freq(uhd::tune_request_t(_config.freq), ch);
+            usrp->set_rx_freq(uhd::tune_request_t(dev_freq), ch);
             usrp->set_rx_gain(_config.gain, ch);
         }
         std::cout << boost::format(
-                         "[bonded_receiver] Device %u: %.3f Msps, %.3f MHz, %u ch\n")
+                         "[bonded_receiver] Device %u: %.3f Msps, %.3f MHz, %u ch%s\n")
                          % d % (usrp->get_rx_rate() / 1e6)
-                         % (usrp->get_rx_freq(0) / 1e6) % nch;
+                         % (usrp->get_rx_freq(0) / 1e6) % nch
+                         % (use_freq_plan ? " (freq_plan)" : "");
 
         if (d == 0) {
             _channels_per_device = nch;
@@ -583,6 +538,7 @@ void bonded_receiver::_recv_loop(size_t d)
         if (n == 0) continue;
 
         if (md.error_code == uhd::rx_metadata_t::ERROR_CODE_OVERFLOW) {
+            _overflow_counts[d].fetch_add(1);
             std::cerr << boost::format(
                              "[bonded_receiver] Device %u: overflow (O)\n")
                              % d;
@@ -608,9 +564,10 @@ void bonded_receiver::_recv_loop(size_t d)
         {
             std::lock_guard<std::mutex> lock(_ring_mutexes[d]);
             _ring_buffers[d].push_back(std::move(c));
-            // Limit ring buffer size (keep ~2 seconds of data max)
+            // Limit ring buffer size (keep configurable seconds of data max)
             const size_t max_chunks =
-                static_cast<size_t>(2.0 * _config.rate / buf_sz) + 1;
+                static_cast<size_t>(_config.continuous_buffer_seconds * _config.rate / buf_sz)
+                + 1;
             while (_ring_buffers[d].size() > max_chunks) {
                 _ring_buffers[d].pop_front();
             }

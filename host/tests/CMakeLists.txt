@@ -67,6 +67,7 @@ set(test_sources
     block_id_test.cpp
     rfnoc_property_test.cpp
     multichan_register_iface_test.cpp
+    bonded_receiver_test.cpp
 )
 
 # Note: Python-based tests cannot have the same name as a C++-based test (i.e.,

@@ -2,6 +2,11 @@
 """
 Capture time-aligned IQ samples from two to eight USRP B210s.
 
+NOTE: This script requires a Python virtual environment. Set it up with:
+  python3 -m venv --system-site-packages .venv
+  source .venv/bin/activate
+  pip install -r requirements.txt
+
 Usage:
   capture_sync.py --serials <S0> <S1> [S2 ...] [options]
 
@@ -15,6 +20,7 @@ to provide a coherent reference signal for phase/frequency analysis.
 Output: one capture_<serial>.npy and capture_<serial>_meta.txt per device.
 """
 import argparse
+import json
 import numpy as np
 import uhd
 import time
@@ -35,6 +41,9 @@ def parse_args():
                    help='Center frequency in Hz (default: 915e6)')
     p.add_argument('--gain', type=float, default=30,
                    help='RX gain in dB (default: 30)')
+    p.add_argument('--gain-profile', default=None,
+                   help='JSON file with per-serial RX gains. Example: '
+                        '{"serials": {"30B56D6": 34.0, "30DBC3C": 31.5}}')
     p.add_argument('--nsamps', type=int, default=10_000_000,
                    help='Samples to capture per device (default: 10000000)')
     p.add_argument('--clock-source', default='internal',
@@ -62,6 +71,31 @@ def parse_args():
     if len(args.serials) > 8:
         p.error('--serials accepts at most 8 serial numbers')
     return args
+
+
+def load_gain_profile(path, serials, default_gain):
+    """Load per-serial gains from JSON profile, falling back to default_gain.
+
+    Accepted formats:
+      1) {"serials": {"SER0": 30.0, "SER1": 31.5}}
+      2) {"SER0": 30.0, "SER1": 31.5}
+    """
+    gains = {s: float(default_gain) for s in serials}
+    if path is None:
+        return gains
+
+    with open(path, 'r', encoding='utf-8') as f:
+        data = json.load(f)
+
+    entries = data.get('serials', data) if isinstance(data, dict) else {}
+    if not isinstance(entries, dict):
+        raise ValueError('gain profile must be a JSON object')
+
+    for s in serials:
+        if s in entries:
+            gains[s] = float(entries[s])
+
+    return gains
 
 
 def setup_usrp(serial, rate, freq, gain, clock_source, time_source):
@@ -263,18 +297,29 @@ def main():
     serials = args.serials
     uses_pps = args.time_source in ('external', 'gpsdo')
     use_timed = uses_pps or args.timed
+    try:
+        gain_map = load_gain_profile(args.gain_profile, serials, args.gain)
+    except Exception as e:
+        print(f"ERROR: Failed to load --gain-profile: {e}")
+        sys.exit(1)
 
     print(f"Devices      : {', '.join(serials)}")
     print(f"Clock source : {args.clock_source}")
     print(f"Time source  : {args.time_source}")
     print(f"Timed capture: {use_timed}")
+    if args.gain_profile is None:
+        print(f"RX gain      : {args.gain} dB (uniform)")
+    else:
+        print(f"RX gain prof.: {args.gain_profile}")
+        for s in serials:
+            print(f"  [{s}] RX gain = {gain_map[s]:.2f} dB")
     print()
 
     if args.tx_serial is not None and args.tx_serial not in serials:
         print(f"ERROR: --tx-serial {args.tx_serial!r} is not in --serials {serials}.")
         sys.exit(1)
 
-    usrps = [setup_usrp(s, args.rate, args.freq, args.gain,
+    usrps = [setup_usrp(s, args.rate, args.freq, gain_map[s],
                         args.clock_source, args.time_source)
              for s in serials]
 
@@ -335,7 +380,7 @@ def main():
 
     for i, serial in enumerate(serials):
         samps, md = results[i]
-        save_data(serial, samps, md, args.rate, args.freq, args.gain,
+        save_data(serial, samps, md, args.rate, args.freq, gain_map[serial],
                   args.clock_source, args.time_source)
 
     print("\nCapture complete.")

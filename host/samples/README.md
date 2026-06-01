@@ -47,6 +47,7 @@ Supports **2 to 8 devices**. All devices are initialized, synchronized, and capt
 | `--rate`             | `1e6`        | Sample rate (Hz)                                                     |
 | `--freq`             | `915e6`      | Center frequency (Hz)                                                |
 | `--gain`             | `30`         | RX gain (dB)                                                         |
+| `--gain-profile`     | _(off)_      | JSON file with per-serial RX gains (overrides uniform `--gain`)      |
 | `--nsamps`           | `10000000`   | Samples to capture per device                                        |
 | `--timed`            | off          | Force timed start even with internal time source                     |
 | `--ref-lock-timeout` | `10`         | Seconds to wait for external clock lock                              |
@@ -68,6 +69,51 @@ Pass `--tx-serial <S>` (where `<S>` is one of `--serials`) to make that device t
 - The tone starts before arming the RX streams and stops after all captures complete.
 
 > **USB bandwidth note:** each B210 at 1 MHz needs ~8 MB/s. With 3+ devices on the same USB controller you may see occasional overflows, which are handled gracefully. Using ports connected to separate USB controllers (separate PCIe root ports) is recommended for 4+ devices.
+
+### Per-radio gain calibration and profile reuse
+
+You can estimate per-device RX gain trims from a shared CW tone and then reuse
+those values in later captures.
+
+1. Run calibration (captures synchronized tone and writes JSON profile):
+
+```bash
+python3 calibrate_rx_profile.py \
+  --serials 30B56D6 30DBC3C 30DBC3D 30EDB63 \
+  --tx-serial 30B56D6 \
+  --clock-source external --time-source external \
+  --rate 1e6 --freq 100e6 \
+  --base-gain 40 --tx-gain 55 --tx-offset 100e3 \
+  --nsamps 5000000 \
+  --out rx_gain_profile.json
+```
+
+2. Use the generated profile in normal captures:
+
+```bash
+python3 capture_sync.py \
+  --serials 30B56D6 30DBC3C 30DBC3D 30EDB63 \
+  --clock-source external --time-source external \
+  --rate 1e6 --freq 100e6 \
+  --gain-profile rx_gain_profile.json \
+  --nsamps 10000000
+```
+
+The profile file stores per-serial gains under `serials`, for example:
+
+```json
+{
+  "serials": {
+    "30B56D6": 40.0,
+    "30DBC3C": 42.1,
+    "30DBC3D": 38.7,
+    "30EDB63": 41.3
+  }
+}
+```
+
+`capture_sync.py` accepts either this minimal format or the richer calibration
+output (with metadata).
 
 ### Sync mode examples
 

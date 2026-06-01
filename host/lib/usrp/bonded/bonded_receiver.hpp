@@ -5,6 +5,7 @@
 
 #pragma once
 
+#include <atomic>
 #include <uhd/config.hpp>
 #include <uhd/types/device_addr.hpp>
 #include <uhd/usrp/multi_usrp.hpp>
@@ -39,11 +40,13 @@ public:
         std::string clock_source = "external";
         std::string time_source  = "external";
         double rate = 10e6;              //!< Sample rate (Hz)
-        double freq = 100e6;             //!< Center frequency (Hz)
+        double freq = 100e6;             //!< Uniform center frequency (Hz)
+        std::vector<double> freq_plan;   //!< Optional per-device center freqs (Hz)
         double gain = 40.0;              //!< RX gain (dB)
         std::string subdev;              //!< Optional subdev spec (empty = default)
         bool strict        = false;      //!< Throw on lock failure vs. warn
         double lock_timeout = 5.0;       //!< Seconds to wait for ref_locked
+        double continuous_buffer_seconds = 4.0; //!< Per-device ring retention in continuous mode
     };
 
     //! Result of a receive operation (burst or continuous chunk)
@@ -108,12 +111,15 @@ public:
     size_t num_channels() const { return num_devices() * _channels_per_device; }
     bool is_streaming() const { return _streaming; }
     bool is_configured() const { return _configured; }
+    std::vector<size_t> get_overflow_counts() const;
+    std::vector<size_t> get_zero_fill_counts() const;
 
 private:
     // Internal timestamped chunk for ring buffers
     struct chunk {
         double timestamp;
         size_t num_samples;
+        size_t offset = 0;
         std::vector<std::vector<std::complex<float>>> data; // [channel][samples]
     };
 
@@ -129,6 +135,8 @@ private:
     std::vector<std::thread> _recv_threads;
     std::vector<std::deque<chunk>> _ring_buffers;
     std::vector<std::mutex> _ring_mutexes;
+    std::vector<std::atomic<size_t>> _overflow_counts;
+    std::vector<std::atomic<size_t>> _zero_fill_counts;
     bool _stop_flag = false;
 
     // Internal helpers

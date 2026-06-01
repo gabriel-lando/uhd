@@ -2,6 +2,11 @@
 """
 Analyze synchronization between IQ captures produced by capture_sync.py.
 
+NOTE: This script requires a Python virtual environment. Set it up with:
+  python3 -m venv --system-site-packages .venv
+  source .venv/bin/activate
+  pip install -r requirements.txt
+
 Usage:
   analyze_sync.py --files <file0.npy> <file1.npy> [file2.npy ...] [options]
 
