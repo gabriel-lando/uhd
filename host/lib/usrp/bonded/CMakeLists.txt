@@ -12,4 +12,7 @@ LIBUHD_APPEND_SOURCES(
     ${CMAKE_CURRENT_SOURCE_DIR}/bonded_receiver.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/frequency_plan.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/spectrum_stitcher.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/overlap_reconstructor.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/band_splitter.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/bonded_transmitter.cpp
 )

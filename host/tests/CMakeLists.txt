@@ -68,6 +68,9 @@ set(test_sources
     rfnoc_property_test.cpp
     multichan_register_iface_test.cpp
     bonded_receiver_test.cpp
+    overlap_reconstructor_test.cpp
+    band_splitter_test.cpp
+    bonded_transmitter_test.cpp
 )
 
 # Note: Python-based tests cannot have the same name as a C++-based test (i.e.,
@@ -141,6 +144,7 @@ endif(ENABLE_C_API)
 
 include_directories("${UHD_SOURCE_DIR}/lib/include")
 include_directories("${UHD_BINARY_DIR}/lib/include")
+include_directories("${UHD_SOURCE_DIR}/lib/usrp/bonded")
 include_directories("${CMAKE_CURRENT_SOURCE_DIR}/common")
 
 #for each source: build an executable, register it as a test

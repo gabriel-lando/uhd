@@ -1,0 +1,57 @@
+id: bonded_usrp_band_splitter
+label: Band Splitter
+category: '[bonded_usrp]'
+
+templates:
+  imports: |-
+    from gnuradio import bonded_usrp
+  make: |-
+    bonded_usrp.band_splitter(${rate_in}, ${rate_out}, ${radio1_offset}, ${radio2_offset})
+
+parameters:
+  - id: rate_in
+    label: Wideband Rate (Hz)
+    dtype: real
+    default: 20e6
+  - id: rate_out
+    label: Per-radio Rate (Hz)
+    dtype: real
+    default: 10e6
+  - id: radio1_offset
+    label: Radio1 Offset (Hz)
+    dtype: real
+    default: -5e6
+  - id: radio2_offset
+    label: Radio2 Offset (Hz)
+    dtype: real
+    default: 5e6
+
+inputs:
+  - label: wideband
+    domain: stream
+    dtype: complex
+
+outputs:
+  - label: radio1
+    domain: stream
+    dtype: complex
+  - label: radio2
+    domain: stream
+    dtype: complex
+
+documentation: |-
+  Wideband band splitter backed by uhd::usrp::bonded::band_splitter.
+
+  Takes a single wideband complex baseband stream (at rate_in) and produces
+  two per-radio streams (each at rate_out) by NCO-translating each half-band
+  slice to DC and polyphase-decimating.  This is the TX-side inverse of the
+  Overlap Reconstructor block.
+
+  radio1_offset/radio2_offset are each radio's centre minus fc (Hz) and must
+  match the freq_plan used to tune the radios — typically ±rate_in/4.
+
+  The decimation AA filter's −6 dB point lands at the centre seam, which is
+  the unused DC subcarrier in 802.11 and other direct-conversion OFDM systems
+  (pure hard split — no crossfade overlap needed on TX).
+
+file_format: 1

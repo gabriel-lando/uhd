@@ -44,6 +44,7 @@ public:
         std::vector<double> freq_plan;   //!< Optional per-device center freqs (Hz)
         double gain = 40.0;              //!< RX gain (dB)
         std::string subdev;              //!< Optional subdev spec (empty = default)
+        std::string stream_args;         //!< Optional RX stream args (e.g. num_recv_frames=...,recv_frame_size=...)
         bool strict        = false;      //!< Throw on lock failure vs. warn
         double lock_timeout = 5.0;       //!< Seconds to wait for ref_locked
         double continuous_buffer_seconds = 4.0; //!< Per-device ring retention in continuous mode

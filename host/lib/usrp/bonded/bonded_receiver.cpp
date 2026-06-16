@@ -466,6 +466,9 @@ void bonded_receiver::_create_streamers()
             ch_list[c] = c;
         }
         uhd::stream_args_t sa("fc32");
+        if (!_config.stream_args.empty()) {
+            sa.args = uhd::device_addr_t(_config.stream_args);
+        }
         sa.channels  = ch_list;
         _streamers.push_back(_devices[d]->get_rx_stream(sa));
     }

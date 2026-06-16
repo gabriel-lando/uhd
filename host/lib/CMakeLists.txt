@@ -201,6 +201,52 @@ if(MINGW)
     target_link_libraries(uhd PRIVATE mswsock)
 endif(MINGW)
 
+# Single-precision FFTW for the bonded overlap reconstructor (real-time path).
+# Optional: falls back to a built-in radix-2 FFT when not found.
+find_library(FFTW3F_LIB NAMES fftw3f libfftw3f)
+find_path(FFTW3F_INC NAMES fftw3.h)
+if(FFTW3F_LIB AND FFTW3F_INC)
+    message(STATUS "Found FFTW3f: ${FFTW3F_LIB} (bonded reconstructor accelerated)")
+    target_link_libraries(uhd PRIVATE ${FFTW3F_LIB})
+    target_include_directories(uhd PRIVATE ${FFTW3F_INC})
+    set_property(SOURCE ${CMAKE_CURRENT_SOURCE_DIR}/usrp/bonded/overlap_reconstructor.cpp
+        APPEND PROPERTY COMPILE_DEFINITIONS UHD_HAVE_FFTW3F=1)
+endif()
+
+# OpenMP: parallelize the reconstructor's per-frame work across cores (real-time).
+find_package(OpenMP QUIET)
+if(OpenMP_CXX_FOUND)
+    message(STATUS "Found OpenMP (bonded reconstructor frame-parallel)")
+    target_link_libraries(uhd PRIVATE OpenMP::OpenMP_CXX)
+endif()
+
+# Aggressive vectorization for the bonded DSP hot loops (resampler / NCO /
+# complex-float math).  Scoped to these source files.
+if(NOT MSVC)
+    foreach(_bonded_src
+            ${CMAKE_CURRENT_SOURCE_DIR}/usrp/bonded/overlap_reconstructor.cpp
+            ${CMAKE_CURRENT_SOURCE_DIR}/usrp/bonded/band_splitter.cpp)
+        set_property(SOURCE ${_bonded_src}
+            APPEND PROPERTY COMPILE_OPTIONS
+            -O3 -ffast-math -funroll-loops -march=native)
+    endforeach()
+endif()
+
+# VOLK for the time-domain reconstruction hot path (SIMD FIR / rotator).
+find_library(VOLK_LIB NAMES volk)
+find_path(VOLK_INC NAMES volk/volk.h)
+if(VOLK_LIB AND VOLK_INC)
+    message(STATUS "Found VOLK: ${VOLK_LIB} (bonded reconstructor time-domain SIMD)")
+    target_link_libraries(uhd PRIVATE ${VOLK_LIB})
+    target_include_directories(uhd PRIVATE ${VOLK_INC})
+    foreach(_bonded_src
+            ${CMAKE_CURRENT_SOURCE_DIR}/usrp/bonded/overlap_reconstructor.cpp
+            ${CMAKE_CURRENT_SOURCE_DIR}/usrp/bonded/band_splitter.cpp)
+        set_property(SOURCE ${_bonded_src}
+            APPEND PROPERTY COMPILE_DEFINITIONS UHD_HAVE_VOLK=1)
+    endforeach()
+endif()
+
 function(UHD_LIB_ADD_RPCLIB uhd_lib_name)
     target_include_directories(${uhd_lib_name} PRIVATE deps/rpclib/include)
     target_sources(${uhd_lib_name} PRIVATE $<TARGET_OBJECTS:uhd_rpclib>)
