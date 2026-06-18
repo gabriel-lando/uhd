@@ -20,11 +20,15 @@ bonded_sink::sptr bonded_sink::make(const std::string& serials_csv,
     const std::string& freq_plan_csv,
     const std::string& stream_args,
     int delay_trim_a,
-    int delay_trim_b)
+    int delay_trim_b,
+    const std::string& gain_plan_csv,
+    const std::string& freq_offset_csv,
+    const std::string& phase_offset_csv)
 {
     return gnuradio::make_block_sptr<bonded_sink_impl>(serials_csv, rate, freq,
         gain, clock_source, time_source, strict_lock, lock_timeout, subdev,
-        freq_plan_csv, stream_args, delay_trim_a, delay_trim_b);
+        freq_plan_csv, stream_args, delay_trim_a, delay_trim_b, gain_plan_csv,
+        freq_offset_csv, phase_offset_csv);
 }
 
 // ---------------------------------------------------------------------------
@@ -41,19 +45,25 @@ bonded_sink_impl::bonded_sink_impl(const std::string& serials_csv,
     const std::string& freq_plan_csv,
     const std::string& stream_args,
     int delay_trim_a,
-    int delay_trim_b)
+    int delay_trim_b,
+    const std::string& gain_plan_csv,
+    const std::string& freq_offset_csv,
+    const std::string& phase_offset_csv)
     : gr::sync_block("bonded_sink",
           gr::io_signature::make(2, 2, sizeof(gr_complex)),
           gr::io_signature::make(0, 0, 0)),
       _rate(rate)
 {
-    uhd::usrp::bonded::bonded_transmitter::config cfg;
+    bonded::bonded_transmitter::config cfg;
     cfg.serials       = _parse_serials(serials_csv);
     cfg.clock_source  = clock_source;
     cfg.time_source   = time_source;
     cfg.rate          = rate;
     cfg.freq          = freq;
     cfg.gain          = gain;
+    cfg.gain_plan     = _parse_freq_plan(gain_plan_csv); // generic double-CSV parse
+    cfg.freq_offset_hz   = _parse_freq_plan(freq_offset_csv);
+    cfg.phase_offset_rad = _parse_freq_plan(phase_offset_csv);
     cfg.subdev        = subdev;
     cfg.freq_plan     = _parse_freq_plan(freq_plan_csv);
     cfg.stream_args   = stream_args;
@@ -61,7 +71,7 @@ bonded_sink_impl::bonded_sink_impl(const std::string& serials_csv,
     cfg.lock_timeout  = lock_timeout;
     cfg.sample_delay_trim = {delay_trim_a, delay_trim_b};
 
-    _tx = std::make_unique<uhd::usrp::bonded::bonded_transmitter>(cfg);
+    _tx = std::make_unique<bonded::bonded_transmitter>(cfg);
 }
 
 bonded_sink_impl::~bonded_sink_impl() = default;

@@ -39,7 +39,10 @@ public:
                      const std::string& freq_plan_csv = "",
                      const std::string& stream_args   = "",
                      int delay_trim_a = 0,
-                     int delay_trim_b = 0);
+                     int delay_trim_b = 0,
+                     const std::string& gain_plan_csv  = "",
+                     const std::string& freq_offset_csv  = "",
+                     const std::string& phase_offset_csv = "");
 };
 
 } // namespace bonded_usrp

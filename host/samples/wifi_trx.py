@@ -150,6 +150,13 @@ class WifiRx(gr.top_block):
         self.decode_mac = ieee802_11.decode_mac(True, False)
         self.parse_mac  = ieee802_11.parse_mac(True, False)
 
+        # Optional raw-IQ capture straight off the USRP (for spectrum/seam
+        # diagnosis of the recombined bonded signal).  complex64 (fc32).
+        if getattr(args, 'iq_capture', None):
+            self.iq_sink = blocks.file_sink(
+                gr.sizeof_gr_complex, args.iq_capture, False)
+            self.connect((self.usrp_src, 0), (self.iq_sink, 0))
+
         if args.pcap:
             self.wireshark = foo.wireshark_connector(foo.WIFI, False)
             self.file_sink = blocks.file_sink(gr.sizeof_char, args.pcap, True)
@@ -221,6 +228,9 @@ def main():
                         help='TCP server port for external PDU input on TX side')
     parser.add_argument('--pcap', type=str, default=None,
                         help='Append received frames to this pcap file (RX only)')
+    parser.add_argument('--iq-capture', type=str, default=None,
+                        help='Write raw RX IQ (complex64/fc32) to this file '
+                             '(RX only) for spectrum/seam diagnosis')
     parser.add_argument('--tx-serial', type=str, default='30DBC3D',
                         help='USRP serial for TX')
     parser.add_argument('--rx-serial', type=str, default='30EDB63',

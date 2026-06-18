@@ -6,12 +6,8 @@
 #include <string>
 #include <vector>
 
-namespace uhd {
-namespace usrp {
 namespace bonded {
 class bonded_transmitter;
-}
-}
 }
 
 namespace gr {
@@ -32,7 +28,10 @@ public:
                      const std::string& freq_plan_csv,
                      const std::string& stream_args,
                      int delay_trim_a,
-                     int delay_trim_b);
+                     int delay_trim_b,
+                     const std::string& gain_plan_csv,
+                     const std::string& freq_offset_csv,
+                     const std::string& phase_offset_csv);
 
     ~bonded_sink_impl() override;
 
@@ -50,7 +49,7 @@ private:
     double _rate;
     bool _running = false;
     std::mutex _state_mutex;
-    std::unique_ptr<uhd::usrp::bonded::bonded_transmitter> _tx;
+    std::unique_ptr<bonded::bonded_transmitter> _tx;
 };
 
 } // namespace bonded_usrp

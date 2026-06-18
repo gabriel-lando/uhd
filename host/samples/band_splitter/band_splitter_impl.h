@@ -5,12 +5,8 @@
 #include <memory>
 #include <vector>
 
-namespace uhd {
-namespace usrp {
 namespace bonded {
 class band_splitter;
-}
-}
 }
 
 namespace gr {
@@ -38,7 +34,7 @@ public:
 private:
     double _rate_in;
     double _rate_out;
-    std::unique_ptr<uhd::usrp::bonded::band_splitter> _splitter;
+    std::unique_ptr<bonded::band_splitter> _splitter;
 
     // Leftover buffers: samples produced by process() that didn't fit in the
     // current general_work output buffer.  Both ports always have equal length.

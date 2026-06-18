@@ -5,12 +5,8 @@
 #include <memory>
 #include <vector>
 
-namespace uhd {
-namespace usrp {
 namespace bonded {
 class overlap_reconstructor;
-}
-}
 }
 
 namespace gr {
@@ -40,7 +36,7 @@ public:
 private:
     double _rate_in;
     double _rate_out;
-    std::unique_ptr<uhd::usrp::bonded::overlap_reconstructor> _recon;
+    std::unique_ptr<bonded::overlap_reconstructor> _recon;
     std::vector<gr_complex> _leftover; // reconstructed samples not yet emitted
     size_t _lead = 0;                  // read offset into _leftover
 };

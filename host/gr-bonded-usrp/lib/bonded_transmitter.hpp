@@ -5,7 +5,7 @@
 
 #pragma once
 
-#include <uhd/config.hpp>
+#include "bonded_api.h"
 #include <uhd/types/device_addr.hpp>
 #include <uhd/types/time_spec.hpp>
 #include <uhd/usrp/multi_usrp.hpp>
@@ -18,7 +18,7 @@
 #include <thread>
 #include <vector>
 
-namespace uhd { namespace usrp { namespace bonded {
+namespace bonded {
 
 /*!
  * Synchronized wideband transmitter using two bonded B210s.
@@ -36,7 +36,7 @@ namespace uhd { namespace usrp { namespace bonded {
  * T / per_radio_rate seconds relative to the common time base.  This corrects
  * any residual inter-device skew that survives the shared 10 MHz + PPS sync.
  */
-class UHD_API bonded_transmitter
+class BONDED_API bonded_transmitter
 {
 public:
     //! Configuration for the bonded transmitter.
@@ -175,4 +175,4 @@ private:
     void _async_msg_loop(size_t device_index);
 };
 
-}}} // namespace uhd::usrp::bonded
+} // namespace bonded

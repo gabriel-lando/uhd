@@ -1,0 +1,14 @@
+# Captures and large binary artifacts — never commit these
+*.fc32
+*.pcap
+*.bin
+*.dat
+
+# Python virtualenv
+.venv/
+__pycache__/
+*.pyc
+
+# offline benchmark scratch
+offline_benchmark/
+archive/

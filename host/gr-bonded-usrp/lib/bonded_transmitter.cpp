@@ -14,7 +14,7 @@
 #include <cmath>
 #include <iostream>
 
-namespace uhd { namespace usrp { namespace bonded {
+namespace bonded {
 
 bonded_transmitter::bonded_transmitter(const config& cfg) : _config(cfg)
 {
@@ -590,4 +590,4 @@ void bonded_transmitter::_async_msg_loop(size_t d)
     }
 }
 
-}}} // namespace uhd::usrp::bonded
+} // namespace bonded

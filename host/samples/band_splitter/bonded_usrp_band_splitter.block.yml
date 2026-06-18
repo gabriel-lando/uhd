@@ -40,7 +40,7 @@ outputs:
     dtype: complex
 
 documentation: |-
-  Wideband band splitter backed by uhd::usrp::bonded::band_splitter.
+  Wideband band splitter backed by bonded::band_splitter.
 
   Takes a single wideband complex baseband stream (at rate_in) and produces
   two per-radio streams (each at rate_out) by NCO-translating each half-band

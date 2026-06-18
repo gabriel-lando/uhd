@@ -27,5 +27,8 @@ void bind_bonded_sink(py::module& m)
              py::arg("freq_plan_csv")  = "",
              py::arg("stream_args")    = "",
              py::arg("delay_trim_a")   = 0,
-             py::arg("delay_trim_b")   = 0);
+             py::arg("delay_trim_b")   = 0,
+             py::arg("gain_plan_csv")  = "",
+             py::arg("freq_offset_csv")  = "",
+             py::arg("phase_offset_csv") = "");
 }

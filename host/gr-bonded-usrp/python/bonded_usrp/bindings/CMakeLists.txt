@@ -3,7 +3,6 @@ include(GrPybind)
 list(APPEND bonded_usrp_python_files
     bonded_source_python.cc
     overlap_reconstructor_python.cc
-    band_splitter_python.cc
     bonded_sink_python.cc
     python_bindings.cc)
 

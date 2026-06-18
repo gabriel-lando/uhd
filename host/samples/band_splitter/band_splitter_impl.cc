@@ -1,6 +1,6 @@
 #include "band_splitter_impl.h"
 
-#include "band_splitter.hpp" // uhd::usrp::bonded::band_splitter
+#include "band_splitter.hpp" // bonded::band_splitter
 #include <gnuradio/io_signature.h>
 
 #include <algorithm>
@@ -29,12 +29,12 @@ band_splitter_impl::band_splitter_impl(double rate_in,
       _rate_in(rate_in),
       _rate_out(rate_out)
 {
-    uhd::usrp::bonded::band_splitter_config cfg;
+    bonded::band_splitter_config cfg;
     cfg.input_rate       = rate_in;
     cfg.per_radio_rate   = rate_out;
     cfg.radio1_offset_hz = radio1_offset;
     cfg.radio2_offset_hz = radio2_offset;
-    _splitter = std::make_unique<uhd::usrp::bonded::band_splitter>(cfg);
+    _splitter = std::make_unique<bonded::band_splitter>(cfg);
 
     set_relative_rate(rate_out / rate_in);
 }

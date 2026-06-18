@@ -134,6 +134,27 @@ class WifiBondedTx(gr.top_block):
         freq_plan_csv = (args.freq_plan_csv
                          if args.freq_plan_csv
                          else f"{freq_a},{freq_b}")
+        # Per-radio TX gain to balance the two half-bands at the receiver
+        # (two independent B210s/antennas rarely radiate equal power).  Falls
+        # back to the uniform --tx-gain when a per-radio value is unset.
+        gain_a = args.tx_gain_a if args.tx_gain_a is not None else args.tx_gain
+        gain_b = args.tx_gain_b if args.tx_gain_b is not None else args.tx_gain
+        gain_plan_csv = (f"{gain_a},{gain_b}"
+                         if (args.tx_gain_a is not None
+                             or args.tx_gain_b is not None)
+                         else "")
+        if gain_plan_csv:
+            print(f"[bonded-tx] per-radio TX gain: A={gain_a} B={gain_b}")
+
+        # Inter-radio phase-coherence correction (applied to radio B).
+        # freeze the relative CFO with --freq-offset-b and pin the relative
+        # phase with --phase-offset-b (see bonded_cw.py / cw_analyze.py).
+        freq_offset_csv  = f"{args.freq_offset_a},{args.freq_offset_b}"
+        phase_offset_csv = f"{args.phase_offset_a},{args.phase_offset_b}"
+        if args.freq_offset_b or args.phase_offset_b or args.freq_offset_a or args.phase_offset_a:
+            print(f"[bonded-tx] phase corr: A(f={args.freq_offset_a}Hz,ph={args.phase_offset_a}) "
+                  f"B(f={args.freq_offset_b}Hz,ph={args.phase_offset_b})")
+
         self.bonded_snk = bonded_usrp.bonded_sink(
             f"{args.serial_a},{args.serial_b}",
             per_radio,
@@ -148,6 +169,9 @@ class WifiBondedTx(gr.top_block):
             args.stream_args,
             args.delay_trim_a,
             args.delay_trim_b,
+            gain_plan_csv,
+            freq_offset_csv,
+            phase_offset_csv,
         )
 
         # ── Connections ───────────────────────────────────────────────────────
@@ -186,7 +210,27 @@ def main():
     p.add_argument('--samp-rate', type=float, default=20e6,
                    help='Combined wideband rate in Hz; per-radio = samp-rate/2')
     p.add_argument('--tx-gain', type=float, default=0.5,
-                   help='TX gain, normalized [0.0, 1.0]; 0.5 ≈ 44 dB on B210')
+                   help='Uniform TX gain, normalized [0.0, 1.0]; 0.5 ≈ 44 dB '
+                        'on B210.  Used for any radio without a per-radio override.')
+    p.add_argument('--tx-gain-a', type=float, default=None,
+                   help='Per-radio normalized TX gain for Radio A (lower half); '
+                        'overrides --tx-gain.  Use to balance the two half-bands '
+                        'at the RX (e.g. boost the weaker radio).')
+    p.add_argument('--tx-gain-b', type=float, default=None,
+                   help='Per-radio normalized TX gain for Radio B (upper half); '
+                        'overrides --tx-gain.')
+
+    # ── Inter-radio phase-coherence correction ────────────────────────────────
+    p.add_argument('--freq-offset-a', type=float, default=0.0,
+                   help='Digital freq correction (Hz) on Radio A (rarely needed).')
+    p.add_argument('--freq-offset-b', type=float, default=0.0,
+                   help='Digital freq correction (Hz) on Radio B to freeze the '
+                        'inter-radio relative CFO (set to -measured_CFO).')
+    p.add_argument('--phase-offset-a', type=float, default=0.0,
+                   help='Static phase offset (rad) on Radio A.')
+    p.add_argument('--phase-offset-b', type=float, default=0.0,
+                   help='Static phase offset (rad) on Radio B to pin the '
+                        'inter-radio relative phase away from the sync dead zone.')
     p.add_argument('--tx-amplitude', type=float, default=0.6,
                    help='Baseband amplitude scale applied before the splitter')
     p.add_argument('--serial-a', type=str, default='30B56D6',

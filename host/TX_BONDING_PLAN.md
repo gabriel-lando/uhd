@@ -562,3 +562,264 @@ initial burst, then got stuck in a broken state and never re-acquired.
 declaring an inter-frame gap, then a full FIFO-depth silence burst (not a
 single `bs` slice) for the inter-frame gap. Intra-frame chunk-to-chunk
 spacing is < 200 µs << 1 ms, so the wait never times out mid-frame.
+
+#### Bug 7 — Inter-radio drift from independent per-device silence (the big one)
+
+**Symptom:** On air, ~2 frames decoded per 30 s while the single-radio 20 MHz
+baseline decoded ~88/30 s — both radios ref-locked and PPS-aligned, **zero
+underruns**. Occasional frames "popped in" at random.
+**Cause:** The continuous send loop (Bug 3/6 design) ran **one independent
+thread per radio**. Real frame data stayed coupled (same GR `work()` chunk fed
+both queues), but the **inter-frame silence did not**: each thread independently
+injected its own count of 26 ms FIFO-depth silence bursts during the 300 ms
+strobe gap. Nothing forced the two radios to emit the *same* number of silence
+samples per gap, so after the first gap the two half-bands were offset by some
+multiple of ~26 ms → the seam was destroyed. Only the rare frame where both
+threads happened to re-align by chance decoded. This is a *time-varying*
+desync, which is why the static `--delay-trim` knob could not fix it and why
+there were no underruns (the FIFO stayed fed — it just wasn't mutually aligned).
+**Fix:** Replaced the two free-running per-device threads with a **single
+consumer thread that emits each 802.11 frame as one PPS-timed burst on all
+devices** (`_send_loop_burst`). Both devices' samples are now stored coupled in
+one queue (`tx_chunk::per_dev`), the frame boundary is detected as a ≥5 ms lull,
+and the whole frame is sent with a single shared `time_spec`
+(`get_time_now() + 30 ms`), `start_of_burst`→`end_of_burst`, and **no
+inter-frame silence at all**. Because every burst carries an absolute timestamp
+on the shared PPS time base, inter-frame gaps and any stray underrun can no
+longer desync the halves — the design now mirrors the already-correct
+`send_burst()` path. The per-device `sample_delay_trim` is applied per burst
+(prepended zeros) so it survives every frame instead of drifting away.
+
+---
+
+## 9. On-air bring-up debugging log (2026-06-16) — progress-seminar record
+
+This section is a complete, self-contained record of the first real on-air
+bring-up of the hard-split TX bonding, written so it can be turned directly into
+progress-seminar slides. It documents the test method, every hypothesis we
+formed, what we changed, the quantitative results, the validated root-cause
+analysis, and the open questions. **Headline:** two of three problems were found
+and fixed; the third (inter-radio RF phase coherence) is identified and
+characterized but not yet solved.
+
+### 9.1 Experimental setup
+
+```
+   Radio A  B210 30B56D6  TX @ 2479 MHz (lower 10 MHz half)  ┐ shared OCXO 10 MHz
+   Radio B  B210 30DBC3C  TX @ 2489 MHz (upper 10 MHz half)  ┘ + PPS (equal cables)
+        over the air ↓ (recombine to one 20 MHz channel @ fc = 2.484 GHz, ch 14)
+   RX-under-test  B210 30EDB63  RX @ 2484 MHz, 20 MHz  → gr-ieee802-11 → decoded frames
+   Monitor (M1)   B210 30DBC3D  RX @ 2484 MHz, 20 MHz  → inter-radio phase measurement
+```
+
+- Channel 14 (2.484 GHz) chosen to stay clear of the polluted 1/6/11 production
+  WiFi channels (default changed in both `wifi_trx.py` and `wifi_bonded_tx.py`).
+- TX waveform: `wifi_phy_hier` 802.11a/g, BPSK 1/2, 500-byte PDU, 300 ms strobe
+  (~3.3 frames/s). Signal chain: `phy → ×amplitude → packet_pad2 → band_splitter
+  (20→2×10 MHz) → bonded_sink (2 B210s)`.
+- **Figure of merit:** decoded frames in 30 s (`grep -c parse_mac`). A healthy
+  single-radio 20 MHz baseline decodes **~88/30 s**.
+
+### 9.2 Diagnostic toolchain built during bring-up
+
+| Tool | Purpose |
+| --- | --- |
+| `wifi_trx.py --pcap` | append decoded frames to a pcap (existing) |
+| `wifi_trx.py --iq-capture FILE` | **new** — dump raw RX IQ (fc32) for offline analysis |
+| `/tmp/offline_decode.py` | run the captured IQ back through the **exact** gr-ieee802-11 chain (file_source instead of USRP) — separates "waveform bad" from "live-RX bad" |
+| spectrum / burst analysis (numpy) | per-half power balance, seam, burst detection |
+| Schmidl-Cox lag-16 / lag-64 self-correlation | STF detection check / LTF-repeat check |
+| LTF `T1→T2` per-subcarrier rotation | data-immune per-half CFO from the known repeated LTF |
+| `samples/bonded_cw.py` | **new** — two-radio CW tones (M1 calibration measurement TX) |
+| `samples/cw_analyze.py` | **new** — recover inter-radio relative phase φ(B−A) over time |
+
+### 9.3 Findings, in order (what we tried and what happened)
+
+**Result timeline (decodes / 30 s):**
+
+| State | decodes/30s | note |
+| --- | --- | --- |
+| Single-radio baseline | ~88 | healthy reference |
+| Bonded, initial | ~2 | "a packet pops in now and then" |
+| + burst-sync fix (§9.4-A) | ~2–3 | TX now structurally correct, but still failing |
+| + per-radio power balance (§9.4-B) | ~2–3 | spectrum now flat, still failing |
+| + freeze/phase correction M2 (§9.4-C) | ~2–3 | no improvement (open) |
+
+#### Problem 1 — Continuous-mode inter-radio desync (FIXED) — see §8.5, Bug 7
+
+The original continuous TX used one send thread **per radio**, each injecting its
+own inter-frame silence; the two half-bands drifted apart by multiples of ~26 ms
+after the first gap. Replaced with a **single consumer that sends each 802.11
+frame as one PPS-timed burst on both radios** (shared `time_spec`, no inter-frame
+silence). Verified on the TX console: in steady state exactly **one 8191-sample
+burst per 300 ms strobe, zero underruns, zero late/time-errors** — i.e. the two
+halves are now sample-aligned over the air by construction. Decode did **not**
+improve (~2→~3), proving desync was real but not the dominant blocker.
+
+#### Problem 2 — Power imbalance between the two halves (FIXED)
+
+Offline spectrum of the recombined burst at the RX:
+
+```
+ lower half (radio A): −18 dB     upper half (radio B): −4 dB     STEP ≈ 14 dB
+```
+
+A clean 14 dB step exactly at the seam (DC) → one radio ~14 dB weaker at the RX.
+802.11 needs all subcarriers −26…+26, so the starved lower half fails the
+convolutional decoder on nearly every frame. The `band_splitter` was exonerated
+(its two outputs are balanced to ±1% in its ctest, and splitting a *coherent*
+baseline frame preserves each half's LTF repeat at lag-32 ≈ 1.0). The imbalance
+is **propagation/antenna geometry**, not the radios — confirmed by the monitor,
+which (at a different position) saw radio **B** ~11 dB weaker, i.e. the weak
+radio depends on the receiver location. **Fix:** added per-radio TX gain
+(`--tx-gain-a/--tx-gain-b` → `bonded_transmitter::config::gain_plan`). With
+`--tx-gain-a 0.95 --tx-gain-b 0.8` the recombined spectrum flattened:
+
+```
+ lower half: −5.4 dB    upper half: −4.1 dB    step = 1.3 dB   (DC null as expected)
+```
+
+Decode still did **not** improve. So power was a real second problem but also not
+the dominant blocker.
+
+#### Problem 3 — Inter-radio RF phase coherence (ROOT CAUSE; characterized, NOT solved)
+
+With timing aligned and power balanced, the recombined waveform **still does not
+decode, even offline** through the exact gr-ieee802-11 chain (0 frames). So the
+defect is in the waveform, in the OFDM structure, and is added only when the two
+halves pass through the two independent radio LOs. Evidence chain:
+
+1. **Detection works:** STF short-preamble autocorrelation (lag-16) plateaus at
+   ~1.0 over ~7.6 µs — packet detection (`sync_short`) fires.
+2. **Hand-rolled LTF check (unreliable):** the recombined LTF lag-64 self-
+   correlation peaked at only ~0.4 (vs 1.0 needed) — suggested the two LTF
+   symbols don't repeat. **Caveat:** our hand-rolled LTF location was shaky on a
+   signal that won't sync; this number is suspect (see open question §9.6).
+3. **Validated control (decisive).** Identical analysis on a single-radio
+   baseline capture vs the bonded capture:
+
+   | | LTF repeat (lag-64) | relative CFO | decodes |
+   | --- | --- | --- | --- |
+   | Baseline (1 radio) | **1.01** | ~0 (±0.5 kHz) | ~88/30 s |
+   | Bonded (2 radios) | **0.36–0.50** | apparent ±5–21 kHz (unreliable) | ~2/30 s |
+
+   The baseline being clean validates the *method* and proves the corruption is
+   bonding-specific.
+
+4. **Clean coherence measurement (M1, the trustworthy result).** Two CW tones
+   (one per radio, distinct frequencies) captured simultaneously at the monitor;
+   the monitor's own LO **cancels in the difference**, giving the true inter-radio
+   relative phase φ(B−A) over time:
+
+   ```
+   relative CFO (linear drift) = +12.8 Hz   (~5 ppb — essentially ZERO)
+   within-frame (700 µs) relative-phase jitter = 0.3° median, 0.6° p90
+   relative-phase change across a whole 700 µs frame = 2.9°
+   ```
+
+   **Interpretation:** the shared OCXO works — the radios are frequency-locked
+   and **extremely coherent within a single packet** (0.3°). What varies is the
+   *slow* relative phase between packets: the 12.8 Hz drift = one full rotation
+   every ~78 ms, so each 300 ms-spaced frame sees a different, but
+   within-frame-constant, relative phase φ.
+
+5. **Why that breaks decode (hypothesis).** The receiver's LTF time-domain
+   correlation (`sync_long`) sees a peak ∝ |cos(φ/2)| for a relative half-band
+   phase φ; it collapses near φ ≈ 180°. As φ drifts through all values
+   frame-to-frame, only the favorably-phased frames sync → the observed sparse
+   ~3 %. The §2.4 premise ("the RX equalizer absorbs the static per-half phase")
+   is true for the *data* (post-FFT, per-subcarrier) but **misses that
+   time-domain sync happens first and is phase-sensitive.**
+
+### 9.4 Changes committed to the code during bring-up
+
+- **A. Burst-coherent TX** (`bonded_transmitter.{hpp,cpp}`): single send thread,
+  one PPS-timed burst per frame, no inter-frame silence (§8.5 Bug 7).
+- **B. Per-radio TX gain** (`gain_plan`): `--tx-gain-a/--tx-gain-b`
+  → `bonded_sink(gain_plan_csv)` → `config::gain_plan` → `set_normalized_tx_gain`.
+- **C. Inter-radio phase/frequency correction (M2, built, not yet effective):**
+  `config::freq_offset_hz` + `phase_offset_rad`, applied as a per-device digital
+  NCO rotation in `_send_loop_burst` referenced to the shared-clock burst time
+  `t0` (so it tracks drift across the inter-frame gap):
+  `s'[k] = s[k]·exp(j(2π·f_off·(t0 + k/rate) + φ_off))`. Exposed as
+  `--freq-offset-b` / `--phase-offset-b` (and `-a`). Async TX listener also now
+  reports late/time-error and sequence events, not just underruns.
+- Default center frequency → 2.484e9 (channel 14) in both driver scripts.
+- Diagnostic: `--iq-capture` on `wifi_trx.py`; new `bonded_cw.py`,
+  `cw_analyze.py`.
+
+### 9.5 M2 attempt and current status
+
+Plan from the M1 numbers: `--freq-offset-b -12.8` to freeze the 12.8 Hz drift,
+then sweep `--phase-offset-b` to pin φ out of the 180° dead zone. **Result so
+far: no measurable improvement (~2–3/30 s).** Possible reasons (to investigate
+when resumed):
+
+- The freeze reference may be wrong: the digital NCO is referenced to the TX's
+  `get_time_now()` burst time `t0`, which may not track the hardware LO phase the
+  way assumed; sign/scaling of the correction unverified on-air.
+- We can pin φ at the *monitor* but not at the *RX* (different propagation path);
+  freezing should still help, but if the freeze itself is ineffective it won't.
+- The unresolved tension in §9.6 — if lag-64 ≈ 0.4 is *real* (not an artifact),
+  there is a within-LTF corruption that the CW within-frame 0.3° measurement does
+  **not** explain, and freezing the slow drift would not fix it.
+
+### 9.6 Open questions / unresolved tension (important for the talk)
+
+The two trustworthy-looking measurements **disagree** and this is not yet
+resolved:
+
+- The **CW measurement** says the radios are coherent to **0.3° within a frame**
+  → a static-per-frame phase the RX equalizer should absorb for data, leaving
+  only `sync_long` phase-sensitivity → freezing/pinning should fix it.
+- The **LTF lag-64 ≈ 0.4** says the two LTF symbols (3.2 µs apart) don't repeat,
+  which 0.3° within-frame jitter **cannot** produce. Either (a) the lag-64 number
+  is a hand-rolled-sync artifact (likely — our LTF location was unreliable on an
+  un-syncable signal), or (b) there is a real wideband impairment (e.g. a
+  per-half group-delay/timing offset, or a band_splitter↔LO interaction) that the
+  narrowband CW tones don't capture.
+
+Resolving this is the first task on resuming: re-measure the LTF repeat with a
+trustworthy sync (e.g. drive the captured IQ through gr-ieee802-11's own
+`sync_long` and read its diagnostics), and/or sweep `--delay-trim-b` together
+with `--freq-offset-b`/`--phase-offset-b` while watching the monitor.
+
+### 9.7 Next steps (priority order)
+
+1. **Resolve §9.6** — is the LTF really corrupted within a frame, or is the
+   waveform actually near-decodable and only the slow phase drift is detuning
+   sync? This decides whether M2 (freeze + pin) can work at all.
+2. **Verify the M2 correction empirically** — apply a *known* `--freq-offset-b`
+   and re-capture on the monitor; confirm φ(B−A) is actually frozen. Get the sign
+   and reference right before sweeping.
+3. **M3 — closed loop:** feed the live monitor estimate of φ(B−A)/Δf back into
+   `freq_offset_hz`/`phase_offset_rad` continuously (slow loop, ~10–100 Hz update
+   is plenty given the 12.8 Hz drift). The black-box RX cannot be aimed at, but
+   freezing the drift + pinning via a φ sweep (or a feedback that maximizes the
+   monitor's two-tone coherence) is the path.
+4. Quiet the per-burst debug `std::cerr` line in `_send_loop_burst` once stable.
+
+### 9.8 What to claim in the seminar (honest framing)
+
+- **Built and proven:** a synchronized two-B210 hard-split TX engine
+  (`band_splitter` + `bonded_transmitter`) with PPS-timed per-frame bursts,
+  per-radio gain balancing, and a per-radio phase/frequency correction hook;
+  validated by ctests and by offline split→recombine of real frames.
+- **Demonstrated on air:** the two radios *do* recombine into one contiguous,
+  power-balanced 20 MHz channel (spectra prove it), and the link is otherwise
+  healthy (single-radio baseline ~88 frames/30 s on the same hardware).
+- **Key scientific finding:** decoding the recombined hard-split signal on a
+  *black-box* receiver requires the two transmitters to be **phase-coherent**, not
+  just frequency-locked. A shared 10 MHz OCXO gives frequency lock (relative CFO
+  ~5 ppb) and excellent within-packet coherence (0.3°), but the **slow inter-packet
+  relative-phase drift (~12.8 Hz, full rotation per ~78 ms)** detunes the
+  receiver's preamble synchronization — the part of the receiver that, unlike the
+  data equalizer, is *not* protected against a per-half phase offset. This is the
+  precise gap in the "the RX equalizer absorbs the phase" assumption.
+- **Contrast with the RX bonding** (`overlap_reconstructor`): RX bonding works
+  because it *estimates and removes* the inter-radio phase in software; the TX
+  side has no such freedom against a receiver we don't control, which is why TX
+  bonding needs explicit transmit-side phase calibration.
+- **Status:** root cause characterized with a clean measurement methodology
+  (CW two-tone, monitor-LO-cancelling); calibration hook implemented; closing the
+  loop (and resolving the §9.6 measurement tension) is the remaining work.

@@ -1,3 +1,43 @@
+# Bonded Wideband RX — Overlap-Aware Reconstruction
+
+Bond two low-cost USB B210s into one wideband receiver using an **intentional
+frequency overlap** (not a hard split). For a 20 MHz channel at `fc`, each radio
+captures a wider 15 MHz slice with a 5 MHz shared overlap:
+
+```
+Radio A @ fc-5 MHz, 15 Msps -> [fc-12.5, fc+2.5] MHz
+Radio B @ fc+5 MHz, 15 Msps -> [fc-2.5, fc+12.5] MHz   overlap = [fc-2.5, fc+2.5]
+```
+
+The shared overlap is used to align the two radios (gain / phase / fractional
+delay) and to crossfade their complex spectra; the out-of-band corners are
+discarded, yielding one contiguous 20 Msps baseband centered at `fc`.
+
+**All reconstruction DSP is in C++** (phase-preserving, suitable for decoding):
+- `lib/usrp/bonded/overlap_reconstructor.{hpp,cpp}` — the reconstruction engine
+  (resample 15→20, translate, overlap alignment, FFT overlap-save stitch with
+  corner discard). Unit-tested by `tests/overlap_reconstructor_test.cpp`
+  (`ctest -R overlap_reconstructor`).
+- `gr-bonded-usrp` blocks: `bonded_source` (synchronized acquisition) and
+  `overlap_reconstructor` (2 complex in → 1 complex out).
+
+Python is only a thin test/flowgraph interface — no DSP:
+- `wifi_bonded_rx.py` — live flowgraph: bonded_source → overlap_reconstructor →
+  gr-ieee802-11 → frame counter. Validate against the single-radio 20 MHz
+  baseline `wifi_trx.py --mode rx --samp-rate 20e6`.
+- `test_overlap_block.py` — hardware-free GR smoke test of the block.
+
+```bash
+# TX (20 MHz reference) on one radio, bonded RX on two others:
+./wifi_trx.py --mode tx --samp-rate 20e6 --tx-serial 30DBC3D
+./wifi_bonded_rx.py --serial-a 30DBC3D --serial-b 30EDB63 --rx-gain-db 30
+```
+
+Superseded experiments (the old no-overlap hard-split pipeline, phase6_3 runs,
+perf automation) are kept under `archive/`.
+
+---
+
 # Phase 2: Synchronization Capture & Analysis
 
 This directory contains scripts to capture and analyze synchronization between two or more USRP B210 devices.
@@ -258,9 +298,159 @@ With three devices a second `[ Pair 1: 30B56D6 → THIRD_SERIAL ]` block follows
 
 Three plots:
 
-1. **Cross-correlation magnitude** — time offset between captures
-2. **Phase difference per segment** — wrapped per-segment phase, shows coherence
-3. **Unwrapped phase difference + LS fit** — linear trend gives frequency offset; residuals give phase coherence
+---
+
+## 3. TX A/B Packet Comparator (Standalone vs Bonded)
+
+This demo uses a real **802.11 PHY** (gr-ieee802-11) for all packet TX/RX:
+
+- TX radio transmits 802.11 OFDM frames via `wifi_phy_hier`.
+- Standalone branch = one RX radio decodes independently.
+- Bonded branch = two RX radios each run a full 802.11 decoder (spatial diversity).
+- Final output compares decoded frame counts: bonded vs standalone.
+
+### One-command runner (recommended)
+
+```bash
+sudo -E bash run_txab_packet_comparator.sh
+```
+
+Default serial mapping:
+
+| Role        | Serial    |
+| ----------- | --------- |
+| TX          | `30B56D6` |
+| Standalone  | `30DBC3C` |
+| Bonded RX-0 | `30DBC3D` |
+| Bonded RX-1 | `30EDB63` |
+
+Override any serial via environment:
+
+```bash
+TX_SERIAL=30DBC3D STANDALONE_SERIAL=30EDB63 sudo -E bash run_txab_packet_comparator.sh
+```
+
+### Key tunable environment variables
+
+| Variable         | Default   | Description                           |
+| ---------------- | --------- | ------------------------------------- |
+| `FREQ`           | `2.437e9` | RF center frequency (Hz) — Wi-Fi ch 6 |
+| `SAMP_RATE`      | `20e6`    | Sample rate (Hz)                      |
+| `TX_GAIN`        | `0.75`    | TX gain normalised (0–1)              |
+| `RX_GAIN`        | `0.75`    | RX gain normalised (0–1)              |
+| `ENCODING`       | `0`       | MCS index (0=BPSK 1/2, 1=BPSK 3/4, …) |
+| `PAYLOAD_LEN`    | `500`     | Bytes per 802.11 frame                |
+| `INTERVAL_MS`    | `300`     | Inter-frame gap (ms)                  |
+| `DURATION`       | `20`      | TX duration (s); RX runs DURATION+2 s |
+| `MIN_RX_PACKETS` | `5`       | Minimum decoded frames for PASS       |
+| `MIN_RX_RATIO`   | `0.10`    | Minimum decoded/transmitted ratio     |
+
+### How it works
+
+The runner launches four processes in parallel using `wifi_b0_link_validate.py`:
+
+1. **Standalone RX** (`--mode rx`, serial `$STANDALONE_SERIAL`) — starts first
+2. **Bonded RX-0** (`--mode rx`, serial `$BONDED0_SERIAL`) — starts first
+3. **Bonded RX-1** (`--mode rx`, serial `$BONDED1_SERIAL`) — starts first
+4. **TX** (`--mode tx`, serial `$TX_SERIAL`) — starts 1 s later, runs for `$DURATION` s
+
+After TX finishes all three RX processes are waited on, then packet counts are compared.
+
+To run experimental 40 MHz:
+
+```bash
+SAMP_RATE=40e6 BANDWIDTH=40e6 sudo -E bash run_txab_packet_comparator.sh
+```
+
+### Verdict semantics
+
+`VERDICT=PASS` requires:
+
+1. `standalone_decoded >= MIN_RX_PACKETS`
+2. `bonded_best >= MIN_RX_PACKETS` (where `bonded_best = max(B0_decoded, B1_decoded)`)
+3. `bonded_best >= standalone_decoded` (bonded is at least as good as standalone)
+
+### Example output
+
+```
+========================================================================
+  TX A/B Comparison Summary — 802.11 PHY (gr-ieee802-11)
+========================================================================
+  TX radio           : 30B56D6    est. packets = 66
+  Standalone RX      : 30DBC3C    decoded      = 41
+  Bonded RX-0        : 30DBC3D    decoded      = 38
+  Bonded RX-1        : 30EDB63    decoded      = 45
+  Bonded best        : 45  (max of B0,B1 — conservative diversity)
+  Bonded sum         : 83  (upper bound, treats all as unique)
+------------------------------------------------------------------------
+  Verdict            : PASS
+  Reason             : bonded_best(45)>=standalone(41) and both>=5
+========================================================================
+```
+
+---
+
+## 4. Single-Link Codec Sanity (TX + RX only)
+
+Use this before bonding tests to validate packet encoding/decoding in isolation.
+
+Script: `txrx_packet_sanity.py`
+
+- One TX radio sends CRC32-protected text packets using binary FSK.
+  The default sanity mode now uses OOK for a simpler baseline decoder.
+- One RX radio captures and decodes.
+- Outputs BER/PER/CRC and strict PASS/FAIL.
+
+Runner (recommended):
+
+```bash
+cd /home/gabriel/uhd/host/samples
+source .venv/bin/activate
+./run_txrx_packet_sanity.sh
+```
+
+Default mapping in runner:
+
+- TX: `30B56D6`
+- RX: `30DBC3C`
+
+Direct command example:
+
+```bash
+python3 txrx_packet_sanity.py \
+  --tx-serial 30B56D6 \
+  --rx-serial 30DBC3C \
+  --clock-source external --time-source external \
+  --tx-antenna TX/RX --rx-antenna RX2 \
+  --rate 1e6 --freq 100e6 \
+  --tx-gain 75 --rx-gain 60 \
+  --symbol-rate 50e3 --modulation ook --freq-dev 80e3 \
+  --packets 240 --payload-len 24 --gap-bits 32 \
+  --capture-lead 1.0 --capture-tail 1.0 \
+  --save-capture
+```
+
+Switch back to FSK for comparison after sanity passes:
+
+```bash
+MODULATION=fsk ./run_txrx_packet_sanity.sh
+```
+
+Artifacts are saved under `samples/perf_logs/txrx_sanity/run_<timestamp>/`:
+
+- `summary.json`
+- `packet_results.csv`
+- `verdict.txt`
+- optional `capture_<serial>.npy`
+
+Suggested workflow:
+
+1. Make single-link script pass first (CRC pass > 0 and BER/PER below thresholds).
+2. Keep the same modulation/settings and move back to comparator/bonded runs.
+
+3. **Cross-correlation magnitude** — time offset between captures
+4. **Phase difference per segment** — wrapped per-segment phase, shows coherence
+5. **Unwrapped phase difference + LS fit** — linear trend gives frequency offset; residuals give phase coherence
 
 **Tone SNR lines** appear only when `--tone-offset` is given. If either device reports SNR < 10 dB, the freq and phase verdicts are marked `N/A (low SNR)` and a hint is printed.
 

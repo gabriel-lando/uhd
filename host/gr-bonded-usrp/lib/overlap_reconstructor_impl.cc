@@ -1,6 +1,6 @@
 #include "overlap_reconstructor_impl.h"
 
-#include "overlap_reconstructor.hpp" // uhd::usrp::bonded::overlap_reconstructor
+#include "overlap_reconstructor.hpp" // bonded::overlap_reconstructor
 #include <gnuradio/io_signature.h>
 
 #include <algorithm>
@@ -35,7 +35,7 @@ overlap_reconstructor_impl::overlap_reconstructor_impl(double rate_in,
       _rate_in(rate_in),
       _rate_out(rate_out)
 {
-    uhd::usrp::bonded::overlap_reconstructor_config cfg;
+    bonded::overlap_reconstructor_config cfg;
     cfg.target_rate      = rate_out;
     cfg.per_radio_rate   = rate_in;
     cfg.target_bw        = target_bw;
@@ -43,7 +43,7 @@ overlap_reconstructor_impl::overlap_reconstructor_impl(double rate_in,
     cfg.radio1_offset_hz = radio1_offset;
     cfg.radio2_offset_hz = radio2_offset;
     cfg.fft_size         = static_cast<size_t>(fft_size);
-    _recon = std::make_unique<uhd::usrp::bonded::overlap_reconstructor>(cfg);
+    _recon = std::make_unique<bonded::overlap_reconstructor>(cfg);
 
     set_relative_rate(rate_out / rate_in);
 }

@@ -6,12 +6,8 @@
 #include <string>
 #include <vector>
 
-namespace uhd {
-namespace usrp {
 namespace bonded {
 class bonded_receiver;
-}
-}
 }
 
 namespace gr {
@@ -53,7 +49,7 @@ private:
 
     bool _running = false;
     std::mutex _state_mutex;
-    std::unique_ptr<uhd::usrp::bonded::bonded_receiver> _rx;
+    std::unique_ptr<bonded::bonded_receiver> _rx;
 };
 
 } // namespace bonded_usrp

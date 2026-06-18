@@ -6,7 +6,7 @@ templates:
   imports: |-
     from gnuradio import bonded_usrp
   make: |-
-    bonded_usrp.bonded_sink(${serials_csv}, ${rate}, ${freq}, ${gain}, ${clock_source}, ${time_source}, ${strict_lock}, ${lock_timeout}, ${subdev}, ${freq_plan_csv}, ${stream_args}, ${delay_trim_a}, ${delay_trim_b})
+    bonded_usrp.bonded_sink(${serials_csv}, ${rate}, ${freq}, ${gain}, ${clock_source}, ${time_source}, ${strict_lock}, ${lock_timeout}, ${subdev}, ${freq_plan_csv}, ${stream_args}, ${delay_trim_a}, ${delay_trim_b}, ${gain_plan_csv}, ${freq_offset_csv}, ${phase_offset_csv})
 
 parameters:
   - id: serials_csv
@@ -61,6 +61,18 @@ parameters:
     label: Delay Trim B (samples)
     dtype: int
     default: 0
+  - id: gain_plan_csv
+    label: Gain Plan CSV
+    dtype: string
+    default: ''
+  - id: freq_offset_csv
+    label: Freq Offset CSV (Hz)
+    dtype: string
+    default: ''
+  - id: phase_offset_csv
+    label: Phase Offset CSV (rad)
+    dtype: string
+    default: ''
 
 inputs:
   - label: radio_a

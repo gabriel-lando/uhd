@@ -105,7 +105,7 @@ bonded_source_impl::bonded_source_impl(const std::string& serials_csv,
       _serials(_parse_serials(serials_csv)),
       _fetch_timeout(fetch_timeout)
 {
-    uhd::usrp::bonded::bonded_receiver::config cfg;
+    bonded::bonded_receiver::config cfg;
     cfg.serials = _serials;
     cfg.clock_source = clock_source;
     cfg.time_source = time_source;
@@ -121,7 +121,7 @@ bonded_source_impl::bonded_source_impl(const std::string& serials_csv,
         throw std::invalid_argument(
             "freq_plan_csv length must match number of serials");
     }
-    _rx = std::make_unique<uhd::usrp::bonded::bonded_receiver>(cfg);
+    _rx = std::make_unique<bonded::bonded_receiver>(cfg);
 }
 
 bonded_source_impl::~bonded_source_impl() {}
